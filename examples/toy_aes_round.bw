@@ -1,0 +1,210 @@
+// A small AES-inspired encrypt/decrypt round-trip.
+//
+// Reads 16 bytes, encrypts them with two toy rounds, prints the ciphertext as
+// hexadecimal, then runs the inverse rounds and verifies that the decrypted
+// state matches the original plaintext.
+//
+// This is not AES. It is a compact, testable cipher-shaped example using:
+// - fixed-size arrays and array initializers
+// - dynamic S-box and inverse S-box lookup
+// - AddRoundKey-style XOR
+// - ShiftRows-style permutation and inverse permutation
+// - reversible pair mixing and inverse mixing
+// - loops, conditionals, bitwise operations, and formatted output
+
+let sbox: byte[16] = [
+    0x6, 0x4, 0xc, 0x5,
+    0x0, 0x7, 0x2, 0xe,
+    0x1, 0xf, 0x3, 0xd,
+    0x8, 0xa, 0x9, 0xb,
+];
+
+let inv_sbox: byte[16] = [
+    0x4, 0x8, 0x6, 0xa,
+    0x1, 0x3, 0x0, 0x5,
+    0xc, 0xe, 0xd, 0xf,
+    0x2, 0xb, 0x7, 0x9,
+];
+
+let hex: byte[16] = [
+    '0', '1', '2', '3',
+    '4', '5', '6', '7',
+    '8', '9', 'A', 'B',
+    'C', 'D', 'E', 'F',
+];
+
+let key: byte[16] = [
+    0x2b, 0x7e, 0x15, 0x16,
+    0x28, 0xae, 0xd2, 0xa6,
+    0xab, 0xf7, 0x15, 0x88,
+    0x09, 0xcf, 0x4f, 0x3c,
+];
+
+let plain: byte[16];
+let state: byte[16];
+let temp: byte[16];
+let i = 0;
+let round = 0;
+let b = 0;
+let hi = 0;
+let lo = 0;
+let left = 0;
+let right = 0;
+let tweak = 0;
+let ok = true;
+
+puts "toy-aes:";
+
+while i < 16 {
+    read plain[i];
+    state[i] = plain[i];
+    i += 1;
+}
+
+// Encrypt.
+round = 0;
+while round < 2 {
+    // AddRoundKey.
+    i = 0;
+    while i < 16 {
+        state[i] ^= key[i];
+        state[i] ^= round;
+        i += 1;
+    }
+
+    // SubBytes with a 4-bit S-box applied to each nibble.
+    i = 0;
+    while i < 16 {
+        b = state[i];
+        hi = b >> 4;
+        lo = b & 0x0f;
+        state[i] = (sbox[hi] << 4) | sbox[lo];
+        i += 1;
+    }
+
+    // ShiftRows on a 4x4 row-major state.
+    i = 0;
+    while i < 16 {
+        temp[i] = state[i];
+        i += 1;
+    }
+    state[0] = temp[0];
+    state[1] = temp[1];
+    state[2] = temp[2];
+    state[3] = temp[3];
+    state[4] = temp[5];
+    state[5] = temp[6];
+    state[6] = temp[7];
+    state[7] = temp[4];
+    state[8] = temp[10];
+    state[9] = temp[11];
+    state[10] = temp[8];
+    state[11] = temp[9];
+    state[12] = temp[15];
+    state[13] = temp[12];
+    state[14] = temp[13];
+    state[15] = temp[14];
+
+    // Reversible pair mix:
+    // left'  = left + (right ^ tweak)
+    // right' = right ^ left'
+    i = 0;
+    while i < 16 {
+        left = state[i];
+        right = state[i + 1];
+        tweak = round ^ i;
+        left += right ^ tweak;
+        right ^= left;
+        state[i] = left;
+        state[i + 1] = right;
+        i += 2;
+    }
+
+    round += 1;
+}
+
+// Print ciphertext.
+i = 0;
+while i < 16 {
+    b = state[i];
+    hi = b >> 4;
+    lo = b & 0x0f;
+    put hex[hi];
+    put hex[lo];
+    i += 1;
+}
+
+// Decrypt.
+round = 2;
+while round > 0 {
+    round -= 1;
+
+    // Inverse pair mix.
+    i = 0;
+    while i < 16 {
+        left = state[i];
+        right = state[i + 1];
+        tweak = round ^ i;
+        right ^= left;
+        left -= right ^ tweak;
+        state[i] = left;
+        state[i + 1] = right;
+        i += 2;
+    }
+
+    // Inverse ShiftRows.
+    i = 0;
+    while i < 16 {
+        temp[i] = state[i];
+        i += 1;
+    }
+    state[0] = temp[0];
+    state[1] = temp[1];
+    state[2] = temp[2];
+    state[3] = temp[3];
+    state[4] = temp[7];
+    state[5] = temp[4];
+    state[6] = temp[5];
+    state[7] = temp[6];
+    state[8] = temp[10];
+    state[9] = temp[11];
+    state[10] = temp[8];
+    state[11] = temp[9];
+    state[12] = temp[13];
+    state[13] = temp[14];
+    state[14] = temp[15];
+    state[15] = temp[12];
+
+    // Inverse SubBytes.
+    i = 0;
+    while i < 16 {
+        b = state[i];
+        hi = b >> 4;
+        lo = b & 0x0f;
+        state[i] = (inv_sbox[hi] << 4) | inv_sbox[lo];
+        i += 1;
+    }
+
+    // AddRoundKey is its own inverse.
+    i = 0;
+    while i < 16 {
+        state[i] ^= round;
+        state[i] ^= key[i];
+        i += 1;
+    }
+}
+
+// Verify decrypt(encrypt(input)) == input.
+i = 0;
+while i < 16 {
+    if state[i] != plain[i] {
+        ok = false;
+    }
+    i += 1;
+}
+
+if ok {
+    puts " ok\n";
+} else {
+    puts " fail\n";
+}

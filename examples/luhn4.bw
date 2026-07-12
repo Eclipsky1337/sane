@@ -1,0 +1,71 @@
+// Validates a 4-digit code with the Luhn checksum.
+//
+// Input: four ASCII digits, such as 1230.
+// Output: "valid\n" when the digits pass Luhn, otherwise "invalid\n".
+//
+// For a 4-digit code a b c d, the checksum is:
+// digit_sum(a * 2) + b + digit_sum(c * 2) + d
+// The code is valid when that sum is divisible by 10.
+
+let d1: byte;
+let d2: byte;
+let d3: byte;
+let d4: byte;
+let ok = true;
+let sum = 0;
+
+read d1;
+read d2;
+read d3;
+read d4;
+
+if d1 < '0' {
+    ok = false;
+} else if d1 > '9' {
+    ok = false;
+}
+
+if d2 < '0' {
+    ok = false;
+} else if d2 > '9' {
+    ok = false;
+}
+
+if d3 < '0' {
+    ok = false;
+} else if d3 > '9' {
+    ok = false;
+}
+
+if d4 < '0' {
+    ok = false;
+} else if d4 > '9' {
+    ok = false;
+}
+
+d1 -= '0';
+d2 -= '0';
+d3 -= '0';
+d4 -= '0';
+
+d1 *= 2;
+if d1 > 9 {
+    d1 -= 9;
+}
+
+d3 *= 2;
+if d3 > 9 {
+    d3 -= 9;
+}
+
+sum = d1 + d2 + d3 + d4;
+
+if sum % 10 != 0 {
+    ok = false;
+}
+
+if ok {
+    puts "valid\n";
+} else {
+    puts "invalid\n";
+}
