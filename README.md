@@ -334,6 +334,48 @@ simple optimizations:
 
 The interpreter uses a 30,000-cell wrapping byte tape. EOF reads as `0`.
 
+### Debug Mode
+
+Use `sanei -d` to run a Brainfuck program in the raw-instruction debugger:
+
+```sh
+cargo run --bin sanei -- -d toy.bf
+```
+
+Core commands:
+
+```text
+r                restart program
+c                continue until breakpoint, Ctrl-C, or halt
+s [n]            step n raw BF instructions
+info             show pc, instruction, pointer, and breakpoint counts
+next <inst>      continue until next matching BF instruction
+b <pc>           set breakpoint at raw BF instruction index
+delete <pc>      delete breakpoint
+breakpoints      list breakpoints
+watch <addr|sym> stop when a cell changes
+unwatch <addr|sym> remove watchpoint by cell or symbol
+watchpoints      list watchpoints
+set <addr|sym> <value> set one tape cell
+pc               show current instruction index
+inst             show current instruction
+code [n]         show instructions around pc
+x[/FMT] <addr|sym> examine tape. FMT is count plus d x c and b h w g
+symbols          show sanec -s symbols
+symbol <name>    show one symbol
+q                exit debugger
+```
+
+Symbol addresses support array indexing and offsets:
+
+```text
+x/16xb state
+x/d state[3]
+x/d state+3
+set state[3] 65
+watch state
+```
+
 ## Diagnostics
 
 Compiler errors include source locations:

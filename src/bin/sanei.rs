@@ -20,6 +20,7 @@ fn run() -> Result<(), String> {
             println!("sanei {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        [flag, path] if flag == "-d" => run_debug(path),
         [path] => run_bf(path),
         _ => Err(usage()),
     }
@@ -37,13 +38,22 @@ fn run_bf(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn run_debug(path: &str) -> Result<(), String> {
+    sane::debug::install_ctrlc_handler();
+    let src = fs::read_to_string(path).map_err(|e| format!("failed to read `{path}`: {e}"))?;
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    sane::debug::run_debug(&src, stdin.lock(), stdout.lock())
+}
+
 fn usage() -> String {
     format!(
         "\
-Usage: sanei <program.bf>
+Usage: sanei [-d] <program.bf>
 
 Options:
   program.bf      Run Brainfuck program from <program.bf>
+  -d              Run program in interactive debug mode
   -h, --help      Show this help text
   -V, --version   Show interpreter version
 
