@@ -1,7 +1,7 @@
 mod common;
 
-use brainwash::compile_source;
 use common::run_bf;
+use sane::compile_source;
 
 #[test]
 fn put_initialized_byte() {

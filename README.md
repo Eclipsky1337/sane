@@ -1,14 +1,14 @@
-# Brainwash
+# Sane
 
-Brainwash is a programming language that compiles to 8-bit Brainfuck.
+Sane is a programming language that compiles to 8-bit Brainfuck.
 
-The compiler is `bwc`; the bundled Brainfuck interpreter is `bwi`.
+The compiler is `sanec`; the bundled Brainfuck interpreter is `sanei`.
 
 ## Quick Start
 
 ```sh
-cargo run --bin bwc -- examples/toy_aes_round.bw -o toy.bf
-printf ABCDEFGHIJKLMNOP | cargo run --bin bwi -- toy.bf
+cargo run --bin sanec -- examples/toy_aes_round.sn -o toy.bf
+printf ABCDEFGHIJKLMNOP | cargo run --bin sanei -- toy.bf
 ```
 
 Expected output:
@@ -26,19 +26,19 @@ cargo test
 Show CLI help and version:
 
 ```sh
-cargo run --bin bwc -- --help
-cargo run --bin bwc -- --version
-cargo run --bin bwi -- --help
-cargo run --bin bwi -- --version
+cargo run --bin sanec -- --help
+cargo run --bin sanec -- --version
+cargo run --bin sanei -- --help
+cargo run --bin sanei -- --version
 ```
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph compiler["bwc compiler"]
+    subgraph compiler["sanec compiler"]
         direction LR
-        source["Brainwash source<br/><code>.bw</code>"]
+        source["Sane source<br/><code>.sn</code>"]
         lexer["lexer.rs<br/>tokens"]
         parser["parser.rs<br/>AST"]
         sema["sema.rs<br/>scopes + tape layout"]
@@ -48,7 +48,7 @@ flowchart TD
         source --> lexer --> parser --> sema --> bf --> output
     end
 
-    subgraph interpreter["bwi interpreter"]
+    subgraph interpreter["sanei interpreter"]
         direction LR
         input["Brainfuck input<br/><code>.bf</code>"]
         interp["interpreter.rs<br/>optimized execution"]
@@ -62,7 +62,7 @@ flowchart TD
 
 ## Language
 
-Brainwash 1.0 has one value type: `byte`. A byte is an unsigned wrapping
+Sane 1.0 has one value type: `byte`. A byte is an unsigned wrapping
 8-bit value stored in one Brainfuck cell. All arithmetic wraps modulo 256.
 Zero is false; any non-zero byte is true.
 
@@ -104,7 +104,7 @@ put x; // A
 
 Arrays are fixed-size byte arrays. Initializers must have exactly the declared
 length, and each initializer element must be a constant byte expression.
-Byte arrays can also be initialized from an ASCII string literal; Brainwash
+Byte arrays can also be initialized from an ASCII string literal; Sane
 does not add a trailing `\0`, so the string byte length must exactly match the
 array length.
 
@@ -289,8 +289,8 @@ put x >> 2;
 The examples are real programs, not the language test matrix:
 
 ```text
-examples/luhn4.bw          validates a 4-digit Luhn checksum
-examples/toy_aes_round.bw  AES-inspired encrypt/decrypt round-trip
+examples/luhn4.sn          validates a 4-digit Luhn checksum
+examples/toy_aes_round.sn  AES-inspired encrypt/decrypt round-trip
 ```
 
 The test suite carries syntax and backend coverage.
@@ -312,7 +312,7 @@ Lexical-scope cells are returned to a simple free-list when their scope ends.
 
 ## Interpreter
 
-`bwi` filters non-Brainfuck characters, parses loops once, and applies
+`sanei` filters non-Brainfuck characters, parses loops once, and applies
 simple optimizations:
 
 ```text
@@ -330,7 +330,7 @@ Compiler errors include source locations:
 
 ```text
 expected Semi, found Put
-  --> bad.bfc:2:1
+  --> bad.sn:2:1
    |
  2 | put x;
    | ^

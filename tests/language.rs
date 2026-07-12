@@ -1,8 +1,8 @@
 mod common;
 
-use brainwash::{compile_source, compile_source_with_path};
-use brainwash::{lexer, parser, sema};
 use common::run_bf;
+use sane::{compile_source, compile_source_with_path};
+use sane::{lexer, parser, sema};
 
 #[test]
 fn scratch_starts_after_globals() {
@@ -42,14 +42,14 @@ fn scoped_cells_are_reused_after_scope_exit() {
 
 #[test]
 fn diagnostics_include_source_location_and_caret() {
-    let err = compile_source_with_path("let x = 1\nput x;", "bad.bfc").unwrap_err();
+    let err = compile_source_with_path("let x = 1\nput x;", "bad.sn").unwrap_err();
     assert!(err.contains("expected Semi"));
-    assert!(err.contains("--> bad.bfc:2:1"), "{err}");
+    assert!(err.contains("--> bad.sn:2:1"), "{err}");
     assert!(err.contains("^"), "{err}");
 
-    let err = compile_source_with_path("put missing;", "bad.bfc").unwrap_err();
+    let err = compile_source_with_path("put missing;", "bad.sn").unwrap_err();
     assert!(err.contains("use of undeclared variable `missing`"));
-    assert!(err.contains("--> bad.bfc:1:5"), "{err}");
+    assert!(err.contains("--> bad.sn:1:5"), "{err}");
 }
 
 #[test]

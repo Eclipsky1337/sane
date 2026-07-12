@@ -1,4 +1,4 @@
-use brainwash::interpreter::{Op, Program, run_source};
+use sane::interpreter::{Op, Program, run_source};
 
 #[test]
 fn bf_interpreter_runs_basic_programs() {

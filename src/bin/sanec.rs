@@ -22,7 +22,7 @@ fn run() -> Result<(), String> {
         .first()
         .is_some_and(|arg| arg == "-V" || arg == "--version")
     {
-        println!("bwc {}", env!("CARGO_PKG_VERSION"));
+        println!("sanec {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -51,7 +51,7 @@ fn run() -> Result<(), String> {
         (src, "<stdin>".to_string())
     };
 
-    let bf = brainwash::compile_source_with_path(&src, &path)?;
+    let bf = sane::compile_source_with_path(&src, &path)?;
 
     if let Some(path) = output {
         fs::write(&path, bf).map_err(|e| format!("failed to write `{path}`: {e}"))?;
@@ -63,5 +63,5 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage:\n  bwc [source.bfc] [-o out.bf]\n  bwc --help\n  bwc --version".to_string()
+    "usage:\n  sanec [source.sn] [-o out.bf]\n  sanec --help\n  sanec --version".to_string()
 }

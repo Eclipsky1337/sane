@@ -17,7 +17,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         [flag] if flag == "-V" || flag == "--version" => {
-            println!("bwi {}", env!("CARGO_PKG_VERSION"));
+            println!("sanei {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         [path] => run_bf(path),
@@ -29,7 +29,7 @@ fn run_bf(path: &str) -> Result<(), String> {
     let src = fs::read_to_string(path).map_err(|e| format!("failed to read `{path}`: {e}"))?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    brainwash::interpreter::run_source(&src, stdin.lock(), stdout.lock())?;
+    sane::interpreter::run_source(&src, stdin.lock(), stdout.lock())?;
     stdout
         .lock()
         .flush()
@@ -38,5 +38,5 @@ fn run_bf(path: &str) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage:\n  bwi <program.bf>\n  bwi --help\n  bwi --version".to_string()
+    "usage:\n  sanei <program.bf>\n  sanei --help\n  sanei --version".to_string()
 }
