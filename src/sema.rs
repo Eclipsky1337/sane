@@ -9,6 +9,7 @@ pub const WORK_CELL_COUNT: usize = 12;
 #[derive(Debug, Clone)]
 pub struct Symbols {
     cells: HashMap<String, usize>,
+    entries: Vec<SymbolInfo>,
     scratch_base: usize,
 }
 
@@ -24,6 +25,23 @@ impl Symbols {
     pub fn control_base(&self) -> usize {
         self.scratch_base + WORK_CELL_COUNT
     }
+
+    pub fn entries(&self) -> &[SymbolInfo] {
+        &self.entries
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolInfo {
+    Scalar {
+        name: String,
+        cell: usize,
+    },
+    Array {
+        name: String,
+        base: usize,
+        len: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +135,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
         stmts,
         symbols: Symbols {
             cells: resolver.public_cells,
+            entries: resolver.public_entries,
             scratch_base: resolver.high_water,
         },
     })
@@ -137,6 +156,7 @@ enum Symbol {
 struct Resolver {
     scopes: Vec<Scope>,
     public_cells: HashMap<String, usize>,
+    public_entries: Vec<SymbolInfo>,
     free_cells: Vec<usize>,
     next_cell: usize,
     high_water: usize,
@@ -147,6 +167,7 @@ impl Resolver {
         Self {
             scopes: vec![Scope::default()],
             public_cells: HashMap::new(),
+            public_entries: Vec::new(),
             free_cells: Vec::new(),
             next_cell: TEMP_COUNT,
             high_water: TEMP_COUNT,
@@ -198,7 +219,14 @@ impl Resolver {
                     .names
                     .insert(name.clone(), Symbol::Scalar(cell));
                 self.current_scope_mut().owned_cells.push(cell);
-                self.public_cells.entry(name.clone()).or_insert(cell);
+                self.define_public_symbol(
+                    name,
+                    cell,
+                    SymbolInfo::Scalar {
+                        name: name.clone(),
+                        cell,
+                    },
+                );
                 Ok(ResolvedStmt::Let { cell, init })
             }
             Stmt::LetArray {
@@ -221,7 +249,15 @@ impl Resolver {
                 self.current_scope_mut()
                     .owned_cells
                     .extend(base..base + 4 + *len);
-                self.public_cells.entry(name.clone()).or_insert(base);
+                self.define_public_symbol(
+                    name,
+                    base,
+                    SymbolInfo::Array {
+                        name: name.clone(),
+                        base,
+                        len: *len,
+                    },
+                );
                 let init = resolve_array_init(init.as_ref(), *len)?;
                 Ok(ResolvedStmt::LetArray {
                     base,
@@ -454,6 +490,17 @@ impl Resolver {
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("resolver always has a scope")
+    }
+
+    fn define_public_symbol(&mut self, name: &str, cell: usize, info: SymbolInfo) {
+        if self.scopes.len() != 1 {
+            return;
+        }
+        if self.public_cells.contains_key(name) {
+            return;
+        }
+        self.public_cells.insert(name.to_string(), cell);
+        self.public_entries.push(info);
     }
 }
 

@@ -26,17 +26,28 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let input = if args.first().is_some_and(|arg| arg != "-o") {
-        Some(args.remove(0))
-    } else {
-        None
-    };
+    let mut input = None;
+    let mut output = None;
+    let mut annotate_symbols = false;
 
-    let output = match args.as_slice() {
-        [] => None,
-        [flag, path] if flag == "-o" => Some(path.clone()),
-        [arg, ..] => return Err(format!("unexpected argument `{arg}`\n\n{}", usage())),
-    };
+    while let Some(arg) = args.first().cloned() {
+        args.remove(0);
+        match arg.as_str() {
+            "-o" => {
+                let Some(path) = args.first().cloned() else {
+                    return Err(format!("missing output path after `-o`\n\n{}", usage()));
+                };
+                args.remove(0);
+                output = Some(path);
+            }
+            "-s" => annotate_symbols = true,
+            _ if arg.starts_with('-') => {
+                return Err(format!("unexpected argument `{arg}`\n\n{}", usage()));
+            }
+            _ if input.is_none() => input = Some(arg),
+            _ => return Err(format!("unexpected argument `{arg}`\n\n{}", usage())),
+        }
+    }
 
     let (src, path) = if let Some(path) = input {
         (
@@ -51,7 +62,11 @@ fn run() -> Result<(), String> {
         (src, "<stdin>".to_string())
     };
 
-    let bf = sane::compile_source_with_path(&src, &path)?;
+    let mut bf = compile_source(&src, &path)?;
+    if annotate_symbols {
+        let symbols = resolve_symbols(&src, &path)?;
+        bf = format!("{}\n{bf}", format_symbol_annotation(&symbols));
+    }
 
     if let Some(path) = output {
         fs::write(&path, bf).map_err(|e| format!("failed to write `{path}`: {e}"))?;
@@ -62,6 +77,58 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn compile_source(src: &str, path: &str) -> Result<String, String> {
+    sane::compile_source_with_path(src, path)
+}
+
+fn resolve_symbols(src: &str, path: &str) -> Result<sane::sema::Symbols, String> {
+    let tokens = sane::lexer::lex(src).map_err(|err| err.render(path, src))?;
+    let mut parser = sane::parser::Parser::new(tokens);
+    let program = parser
+        .parse_program()
+        .map_err(|err| err.render(path, src))?;
+    Ok(sane::sema::resolve(&program)
+        .map_err(|err| err.render(path, src))?
+        .symbols)
+}
+
+fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
+    let mut lines = Vec::new();
+    lines.push("SANE SYMBOLS".to_string());
+    lines.push(format!("TEMP CELLS 0 TO {}", sane::sema::TEMP_COUNT - 1));
+    lines.push(format!("SCRATCH BASE {}", symbols.scratch_base()));
+    lines.push(format!("CONTROL BASE {}", symbols.control_base()));
+
+    for entry in symbols.entries() {
+        match entry {
+            sane::sema::SymbolInfo::Scalar { name, cell } => {
+                lines.push(format!("{name} CELL {cell}"));
+            }
+            sane::sema::SymbolInfo::Array { name, base, len } => {
+                let first = base + 4;
+                let last = first + len - 1;
+                lines.push(format!(
+                    "{name} ARRAY BASE {base} LEN {len} DATA CELLS {first} TO {last}"
+                ));
+            }
+        }
+    }
+
+    lines.push("END SANE SYMBOLS".to_string());
+    lines.join("\n")
+}
+
 fn usage() -> String {
-    "usage:\n  sanec [source.sn] [-o out.bf]\n  sanec --help\n  sanec --version".to_string()
+    format!(
+        "\
+Usage: sanec [source.sn] [-o out.bf] [-s]
+
+Options:
+  source.sn       Read Sane source from file, or stdin if omitted
+  -o <file>       Write Brainfuck output to <file>
+  -s              Add BF-safe symbol table comments
+  -h, --help      Show this help text
+  -V, --version   Show compiler version
+"
+    )
 }

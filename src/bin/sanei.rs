@@ -38,5 +38,18 @@ fn run_bf(path: &str) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage:\n  sanei <program.bf>\n  sanei --help\n  sanei --version".to_string()
+    format!(
+        "\
+Usage: sanei <program.bf>
+
+Options:
+  program.bf      Run Brainfuck program from <program.bf>
+  -h, --help      Show this help text
+  -V, --version   Show interpreter version
+
+Notes:
+  Non-Brainfuck characters are ignored
+  Program input is read from stdin
+"
+    )
 }

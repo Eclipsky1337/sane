@@ -32,6 +32,12 @@ cargo run --bin sanei -- --help
 cargo run --bin sanei -- --version
 ```
 
+Annotate generated Brainfuck with a symbol table:
+
+```sh
+cargo run --bin sanec -- examples/toy_aes_round.sn -o toy.bf -s
+```
+
 ## Architecture
 
 ```mermaid
@@ -309,6 +315,10 @@ cell control_base..        control-flow guard cells
 Scalars occupy one cell. Arrays use four metadata cells
 (`space`, `index1`, `index2`, `data`) followed by one cell per element.
 Lexical-scope cells are returned to a simple free-list when their scope ends.
+
+`sanec -s` writes the public symbol table into the generated Brainfuck as
+BF-safe comments. The annotation avoids the eight Brainfuck instruction
+characters, so `sanei` ignores it during execution.
 
 ## Interpreter
 
