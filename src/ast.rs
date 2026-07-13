@@ -2,7 +2,23 @@ use crate::diagnostic::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
+    pub functions: Vec<Function>,
     pub stmts: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    pub name: String,
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +60,7 @@ pub enum Stmt {
         index: Expr,
         span: Span,
     },
+    Return(Expr, Span),
     Break(Span),
     Continue(Span),
     Block(Vec<Stmt>, Span),
@@ -99,6 +116,12 @@ pub enum Expr {
         index: Box<Expr>,
         span: Span,
     },
+    Call {
+        name: String,
+        name_span: Span,
+        args: Vec<Expr>,
+        span: Span,
+    },
     Unary {
         op: UnOp,
         expr: Box<Expr>,
@@ -116,7 +139,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Byte(_, span) | Expr::Var(_, span) => *span,
-            Expr::ArrayGet { span, .. } => *span,
+            Expr::ArrayGet { span, .. } | Expr::Call { span, .. } => *span,
             Expr::Unary { span, .. } | Expr::Binary { span, .. } => *span,
         }
     }

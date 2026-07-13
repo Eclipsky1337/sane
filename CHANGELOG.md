@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- Added the experimental `pc` backend with basic-block IR.
+- Added byte functions for the `pc` backend: parameters, locals, returns, nested calls, and expression calls.
+- Added static function frames, return-value spills, recursive-call rejection, and a 16-level return-pc stack limit.
+- Added `examples/Collatz.sn` as a function-based example.
+- Made `sanei` flush output after each Brainfuck `.` for interactive programs.
+- Expanded tests for function semantics, pc backend behavior, and interpreter flushing.
+
 ## 1.0.0
 
 - Initial stable Sane release.

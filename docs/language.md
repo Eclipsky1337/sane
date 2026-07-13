@@ -199,6 +199,37 @@ for ;; {
 `for` loop, `continue` still runs the step expression before rechecking the
 condition.
 
+## Functions
+
+Functions accept byte parameters and return one byte:
+
+```sane
+fn add(a: byte, b: byte) -> byte {
+    let result = a + b;
+    return result;
+}
+
+println add(40, 2);
+```
+
+Function calls are expressions and may be nested or combined with other
+operators:
+
+```sane
+let x = add(1, 2) + add(3, 4);
+return add(x, add(5, 6));
+```
+
+Functions are currently supported only by the PC backend. Compile a function
+program with `sanec -b pc`.
+
+Each function has a statically allocated frame for its parameters and local
+variables. Nested calls are supported, but recursive call graphs are rejected.
+The return-address stack allows at most 16 simultaneously active calls.
+
+Every reachable path through a function must return a value. `return` is valid
+only inside a function.
+
 ## Expressions
 
 Expression forms include:
@@ -210,6 +241,7 @@ false
 character
 variable
 array[index]
+function(arguments)
 (expression)
 !expression
 ~expression
@@ -247,4 +279,6 @@ x % 0 == x
 - The only value type is `byte`.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
-- Source files are compiled independently; there are no functions or modules.
+- Function parameters, locals, and return values are bytes.
+- Recursive function call graphs are rejected.
+- Source files are compiled independently; there are no modules.

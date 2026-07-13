@@ -3,6 +3,7 @@ pub mod bf;
 pub mod debug;
 pub mod diagnostic;
 pub mod interpreter;
+pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod sema;

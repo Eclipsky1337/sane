@@ -1,0 +1,33 @@
+fn Collatz(n: byte) -> byte {
+    if n == 1 {
+        return 1;
+    }
+    if n % 2 == 0 {
+        return n / 2;
+    } else {
+        return 3 * n + 1;
+    }
+}
+
+puts "input a number: ";
+let n: byte;
+let buf: byte;
+
+loop {
+    read buf;
+    if buf == 10 {
+        break;
+    }
+    n = n * 10 + (buf - '0');
+}
+
+for let i = 0;; i += 1 {
+    puts "step ";
+    print i;
+    puts ": ";
+    println n;
+    if n == 1 {
+        break;
+    }
+    n = Collatz(n);
+}

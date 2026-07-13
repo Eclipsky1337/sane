@@ -31,7 +31,8 @@ printf 1230 | sanei luhn4.bf
 ```
 
 EOF stores zero in the current cell. The interpreter uses a 30,000-cell tape
-with wrapping 8-bit cells.
+with wrapping 8-bit cells. Output is flushed after every Brainfuck `.` so
+interactive prompts are visible before the program requests input.
 
 ## Parsing And Optimization
 

@@ -9,6 +9,8 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Let,
+    Fn,
+    Return,
     If,
     Else,
     While,
@@ -33,6 +35,7 @@ pub enum TokenKind {
     Eq,
     PlusEq,
     MinusEq,
+    Arrow,
     StarEq,
     SlashEq,
     PercentEq,
@@ -163,6 +166,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 chars.next();
                 tokens.push(tok(TokenKind::MinusEq, pos, pos + 2));
             }
+            '-' if matches!(chars.peek(), Some((_, '>'))) => {
+                chars.next();
+                tokens.push(tok(TokenKind::Arrow, pos, pos + 2));
+            }
             '-' => tokens.push(tok(TokenKind::Minus, pos, pos + 1)),
             '*' if matches!(chars.peek(), Some((_, '='))) => {
                 chars.next();
@@ -229,6 +236,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 let kind = match text.as_str() {
                     "let" => TokenKind::Let,
+                    "fn" => TokenKind::Fn,
+                    "return" => TokenKind::Return,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "while" => TokenKind::While,

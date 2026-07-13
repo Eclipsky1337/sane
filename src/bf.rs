@@ -1,13 +1,285 @@
 use crate::ast::{BinOp, UnOp};
-use crate::sema::{ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, WORK_CELL_COUNT};
+use crate::ir::{BlockId, Op, Terminator};
+use crate::sema::{
+    MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, WORK_CELL_COUNT,
+};
 
 const T0: usize = 0;
 const GENERAL_TEMP_COUNT: usize = 8;
 
 pub fn compile(program: &ResolvedProgram) -> Result<String, String> {
+    if !program.functions.is_empty() {
+        return Err("functions require the pc backend (`-b pc`)".to_string());
+    }
     let mut out = BfOut::new(program.symbols.scratch_base());
     emit_stmts(&program.stmts, &mut out, None)?;
     Ok(optimize_bf(&out.code))
+}
+
+pub fn compile_pc(program: &ResolvedProgram) -> Result<String, String> {
+    let ir = crate::ir::lower(program);
+    if ir.blocks.len() > u8::MAX as usize + 1 {
+        return Err("pc backend supports at most 256 basic blocks".to_string());
+    }
+
+    const PC_RESERVED_CELLS: usize = 7 + MAX_CALL_DEPTH;
+    let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), PC_RESERVED_CELLS);
+    let rt = PcRuntime {
+        pc: out.control_base(),
+        running: out.control_base() + 1,
+        dispatch_pc: out.control_base() + 2,
+        matched: out.control_base() + 3,
+        expected: out.control_base() + 4,
+        rv: out.control_base() + 5,
+        call_depth: out.control_base() + 6,
+        ret_base: out.control_base() + 7,
+    };
+
+    out.clear(rt.pc);
+    out.set_const(rt.pc, block_value(ir.entry)?);
+    out.clear(rt.running);
+    out.add_const(rt.running, 1);
+    out.clear(rt.call_depth);
+    out.clear(rt.rv);
+    for depth in 0..MAX_CALL_DEPTH {
+        out.clear(rt.ret_base + depth);
+    }
+
+    out.goto(rt.running);
+    out.code.push('[');
+    out.clear(rt.dispatch_pc);
+    out.copy_add(rt.pc, rt.dispatch_pc, T0);
+
+    for (index, block) in ir.blocks.iter().enumerate() {
+        out.clear(rt.matched);
+        out.copy_add(rt.dispatch_pc, rt.matched, T0);
+        out.clear(rt.expected);
+        out.set_const(rt.expected, index as u8);
+        out.eq(rt.matched, rt.expected);
+
+        out.goto(rt.matched);
+        out.code.push('[');
+        out.clear(rt.matched);
+        for op in &block.ops {
+            emit_op(op, &mut out, rt)?;
+        }
+        emit_terminator(&block.terminator, &ir, program, &mut out, rt)?;
+        out.goto(rt.matched);
+        out.code.push(']');
+    }
+
+    out.goto(rt.running);
+    out.code.push(']');
+
+    Ok(optimize_bf(&out.code))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PcRuntime {
+    pc: usize,
+    running: usize,
+    dispatch_pc: usize,
+    matched: usize,
+    expected: usize,
+    rv: usize,
+    call_depth: usize,
+    ret_base: usize,
+}
+
+fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
+    match op {
+        Op::Let { cell, init } => emit_basic_stmt(
+            &Stmt::Let {
+                cell: *cell,
+                init: init.clone(),
+            },
+            out,
+        ),
+        Op::LetArray { base, len, init } => emit_basic_stmt(
+            &Stmt::LetArray {
+                base: *base,
+                len: *len,
+                init: init.clone(),
+            },
+            out,
+        ),
+        Op::Assign { cell, expr } => emit_basic_stmt(
+            &Stmt::Assign {
+                cell: *cell,
+                expr: expr.clone(),
+            },
+            out,
+        ),
+        Op::ArraySet {
+            base,
+            len,
+            index,
+            expr,
+        } => emit_basic_stmt(
+            &Stmt::ArraySet {
+                base: *base,
+                len: *len,
+                index: index.clone(),
+                expr: expr.clone(),
+            },
+            out,
+        ),
+        Op::Put(expr) => emit_basic_stmt(&Stmt::Put(expr.clone()), out),
+        Op::Puts(bytes) => emit_basic_stmt(&Stmt::Puts(bytes.clone()), out),
+        Op::Print(expr) => emit_basic_stmt(&Stmt::Print(expr.clone()), out),
+        Op::Println(expr) => emit_basic_stmt(&Stmt::Println(expr.clone()), out),
+        Op::Read(cell) => emit_basic_stmt(&Stmt::Read(*cell), out),
+        Op::ReadArray { base, len, index } => emit_basic_stmt(
+            &Stmt::ReadArray {
+                base: *base,
+                len: *len,
+                index: index.clone(),
+            },
+            out,
+        ),
+        Op::StoreReturn(cell) => {
+            out.clear(*cell);
+            out.copy_add(rt.rv, *cell, T0);
+            Ok(())
+        }
+        Op::PutReturn => {
+            out.put(rt.rv);
+            Ok(())
+        }
+        Op::PrintReturn => {
+            out.print_byte_decimal(rt.rv);
+            Ok(())
+        }
+        Op::PrintlnReturn => {
+            out.print_byte_decimal(rt.rv);
+            out.put_byte_const(b'\n');
+            Ok(())
+        }
+    }
+}
+
+fn emit_terminator(
+    terminator: &Terminator,
+    ir: &crate::ir::Program,
+    program: &ResolvedProgram,
+    out: &mut BfOut,
+    rt: PcRuntime,
+) -> Result<(), String> {
+    match terminator {
+        Terminator::Jump(target) => {
+            out.clear(rt.pc);
+            out.set_const(rt.pc, block_value(*target)?);
+        }
+        Terminator::Branch {
+            cond,
+            then_target,
+            else_target,
+        } => {
+            let cond_cell = out.alloc_control_cell();
+            let else_flag = out.alloc_control_cell();
+            emit_expr_to(cond, cond_cell, out, &[cond_cell, else_flag])?;
+            out.boolify(cond_cell, T0);
+            out.clear(rt.pc);
+            out.clear(else_flag);
+            out.add_const(else_flag, 1);
+
+            out.goto(cond_cell);
+            out.code.push('[');
+            out.clear(cond_cell);
+            out.set_const(rt.pc, block_value(*then_target)?);
+            out.clear(else_flag);
+            out.goto(cond_cell);
+            out.code.push(']');
+
+            out.goto(else_flag);
+            out.code.push('[');
+            out.clear(else_flag);
+            out.set_const(rt.pc, block_value(*else_target)?);
+            out.goto(else_flag);
+            out.code.push(']');
+            out.free_control_cells(2);
+        }
+        Terminator::Call {
+            function,
+            args,
+            return_target,
+        } => {
+            let function_index = *function;
+            set_ret_pc(out, rt, block_value(*return_target)?)?;
+            out.add_const(rt.call_depth, 1);
+            let function = program
+                .functions
+                .get(function_index)
+                .ok_or_else(|| "internal error: invalid function index".to_string())?;
+            if function.params.len() != args.len() {
+                return Err("internal error: argument count mismatch".to_string());
+            }
+            for (arg, param) in args.iter().zip(&function.params) {
+                emit_expr_to(arg, *param, out, &[*param])?;
+            }
+            let entry = ir
+                .function_entries
+                .get(function_index)
+                .copied()
+                .ok_or_else(|| "internal error: missing function entry".to_string())?;
+            out.clear(rt.pc);
+            out.set_const(rt.pc, block_value(entry)?);
+        }
+        Terminator::Return(expr) => {
+            emit_expr_to(expr, rt.rv, out, &[rt.rv])?;
+            out.sub_const(rt.call_depth, 1);
+            load_ret_pc(out, rt)?;
+        }
+        Terminator::ReturnValue => {
+            out.sub_const(rt.call_depth, 1);
+            load_ret_pc(out, rt)?;
+        }
+        Terminator::Halt => {
+            out.clear(rt.pc);
+            out.clear(rt.running);
+        }
+    }
+    Ok(())
+}
+
+fn set_ret_pc(out: &mut BfOut, rt: PcRuntime, value: u8) -> Result<(), String> {
+    for depth in 0..MAX_CALL_DEPTH {
+        out.clear(rt.matched);
+        out.copy_add(rt.call_depth, rt.matched, T0);
+        out.clear(rt.expected);
+        out.set_const(rt.expected, depth as u8);
+        out.eq(rt.matched, rt.expected);
+        out.goto(rt.matched);
+        out.code.push('[');
+        out.clear(rt.matched);
+        out.clear(rt.ret_base + depth);
+        out.set_const(rt.ret_base + depth, value);
+        out.goto(rt.matched);
+        out.code.push(']');
+    }
+    Ok(())
+}
+
+fn load_ret_pc(out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
+    out.clear(rt.pc);
+    for depth in 0..MAX_CALL_DEPTH {
+        out.clear(rt.matched);
+        out.copy_add(rt.call_depth, rt.matched, T0);
+        out.clear(rt.expected);
+        out.set_const(rt.expected, depth as u8);
+        out.eq(rt.matched, rt.expected);
+        out.goto(rt.matched);
+        out.code.push('[');
+        out.clear(rt.matched);
+        out.copy_add(rt.ret_base + depth, rt.pc, T0);
+        out.goto(rt.matched);
+        out.code.push(']');
+    }
+    Ok(())
+}
+
+fn block_value(block: BlockId) -> Result<u8, String> {
+    u8::try_from(block.0).map_err(|_| "pc backend supports at most 256 basic blocks".to_string())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +361,9 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
         }
         Stmt::Read(cell) => out.read(*cell),
         Stmt::ReadArray { base, len, index } => emit_array_read(*base, *len, index, out)?,
+        Stmt::Return(_) => {
+            return Err("internal error: return reached structured backend".to_string());
+        }
         Stmt::Break => {
             let ctx = loop_ctx.ok_or_else(|| "internal error: break outside loop".to_string())?;
             out.clear(ctx.active);
@@ -123,6 +398,22 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
         } => emit_for(init.as_deref(), cond.as_ref(), step.as_deref(), body, out)?,
     }
     Ok(())
+}
+
+fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
+    match stmt {
+        Stmt::Let { .. }
+        | Stmt::LetArray { .. }
+        | Stmt::Assign { .. }
+        | Stmt::ArraySet { .. }
+        | Stmt::Put(_)
+        | Stmt::Puts(_)
+        | Stmt::Print(_)
+        | Stmt::Println(_)
+        | Stmt::Read(_)
+        | Stmt::ReadArray { .. } => emit_stmt(stmt, out, None),
+        _ => Err("internal error: control-flow statement in basic block".to_string()),
+    }
 }
 
 fn emit_if(
@@ -307,6 +598,11 @@ fn emit_expr_to(
         }
         Expr::ArrayGet { base, len, index } => {
             emit_array_get(*base, *len, index, dst, out, reserved)?;
+        }
+        Expr::Call { .. } => {
+            return Err(
+                "internal error: function call reached direct expression codegen".to_string(),
+            );
         }
         Expr::Unary { op, expr } => {
             emit_expr_to(expr, dst, out, reserved)?;
@@ -535,6 +831,7 @@ fn const_eval(expr: &Expr) -> Option<u8> {
         Expr::Byte(value) => Some(*value),
         Expr::Var(_) => None,
         Expr::ArrayGet { .. } => None,
+        Expr::Call { .. } => None,
         Expr::Unary { op, expr } => {
             let value = const_eval(expr)?;
             match op {
@@ -728,11 +1025,15 @@ struct BfOut {
 
 impl BfOut {
     fn new(scratch_base: usize) -> Self {
+        Self::with_control_depth(scratch_base, 0)
+    }
+
+    fn with_control_depth(scratch_base: usize, control_depth: usize) -> Self {
         Self {
             code: String::new(),
             ptr: 0,
             scratch_base,
-            control_depth: 0,
+            control_depth,
         }
     }
 

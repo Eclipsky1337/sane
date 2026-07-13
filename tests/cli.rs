@@ -19,6 +19,31 @@ fn sanec_help_describes_arguments_and_options() {
     assert!(help.contains("source.sn       Read Sane source from file"));
     assert!(help.contains("-o <file>       Write Brainfuck output to <file>"));
     assert!(help.contains("-s              Add BF-safe symbol table comments"));
+    assert!(help.contains("-b <backend>    Select backend: structured or pc"));
+}
+
+#[test]
+fn sanec_can_compile_with_pc_backend() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sanec"))
+        .arg("-b")
+        .arg("pc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"let x = 3; while x { put '0' + x; x -= 1; }")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+
+    let bf = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"321");
 }
 
 #[test]

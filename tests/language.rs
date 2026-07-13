@@ -41,6 +41,102 @@ fn scoped_cells_are_reused_after_scope_exit() {
 }
 
 #[test]
+fn structured_backend_rejects_functions() {
+    let err = compile_source("fn f() -> byte { return 1; } put f();").unwrap_err();
+    assert!(err.contains("functions require the pc backend"), "{err}");
+}
+
+#[test]
+fn recursive_functions_are_rejected() {
+    let src = "\
+fn f() -> byte { return g(); }
+fn g() -> byte { return f(); }
+put f();
+";
+    let tokens = lexer::lex(src).unwrap();
+    let mut parser = parser::Parser::new(tokens);
+    let program = parser.parse_program().unwrap();
+    let err = sema::resolve(&program).unwrap_err();
+    assert!(
+        err.message
+            .contains("recursive function calls are not supported"),
+        "{:?}",
+        err
+    );
+}
+
+#[test]
+fn direct_recursive_functions_are_rejected() {
+    let src = "fn f() -> byte { return f(); } put f();";
+    let tokens = lexer::lex(src).unwrap();
+    let mut parser = parser::Parser::new(tokens);
+    let program = parser.parse_program().unwrap();
+    let err = sema::resolve(&program).unwrap_err();
+    assert!(
+        err.message
+            .contains("recursive function calls are not supported"),
+        "{:?}",
+        err
+    );
+}
+
+#[test]
+fn function_declaration_errors_are_reported() {
+    let cases = [
+        (
+            "fn f() -> byte { return 1; } fn f() -> byte { return 2; }",
+            "function `f` already declared",
+        ),
+        (
+            "fn f(a: byte, a: byte) -> byte { return a; }",
+            "parameter `a` already declared",
+        ),
+        ("return 1;", "`return` outside function"),
+        (
+            "fn f() -> byte { return 1; } put missing();",
+            "call to undeclared function `missing`",
+        ),
+        (
+            "fn f(a: byte) -> byte { return a; } put f(1, 2);",
+            "function `f` expects 1 arguments, got 2",
+        ),
+    ];
+
+    for (src, expected) in cases {
+        let tokens = lexer::lex(src).unwrap();
+        let mut parser = parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let err = sema::resolve(&program).unwrap_err();
+        assert!(err.message.contains(expected), "{:?}", err);
+    }
+}
+
+#[test]
+fn function_call_depth_is_limited() {
+    let mut src = String::new();
+    for i in 0..17 {
+        let next = i + 1;
+        if i == 16 {
+            src.push_str(&format!("fn f{i}() -> byte {{ return 1; }}\n"));
+        } else {
+            src.push_str(&format!("fn f{i}() -> byte {{ return f{next}(); }}\n"));
+        }
+    }
+    src.push_str("put f0();");
+
+    let tokens = lexer::lex(&src).unwrap();
+    let mut parser = parser::Parser::new(tokens);
+    let program = parser.parse_program().unwrap();
+    let err = sema::resolve(&program).unwrap_err();
+    assert!(
+        err.message
+            .contains("function call depth 17 exceeds limit 16"),
+        "{:?}",
+        err
+    );
+}
+
+#[test]
 fn diagnostics_include_source_location_and_caret() {
     let err = compile_source_with_path("let x = 1\nput x;", "bad.sn").unwrap_err();
     assert!(err.contains("expected Semi"));

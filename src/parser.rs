@@ -1,4 +1,4 @@
-use crate::ast::{ArrayInit, BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{ArrayInit, BinOp, Expr, Function, Param, Program, Stmt, UnOp};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -13,11 +13,49 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> Result<Program, Diagnostic> {
+        let mut functions = Vec::new();
         let mut stmts = Vec::new();
         while !self.at(TokenKind::Eof) {
-            stmts.push(self.parse_stmt()?);
+            if self.at(TokenKind::Fn) {
+                functions.push(self.parse_function()?);
+            } else {
+                stmts.push(self.parse_stmt()?);
+            }
         }
-        Ok(Program { stmts })
+        Ok(Program { functions, stmts })
+    }
+
+    fn parse_function(&mut self) -> Result<Function, Diagnostic> {
+        let start = self.expect(TokenKind::Fn)?.span;
+        let (name, name_span) = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.match_kind(TokenKind::RParen) {
+            loop {
+                let (param_name, param_span) = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                self.expect(TokenKind::ByteTy)?;
+                params.push(Param {
+                    name: param_name,
+                    name_span: param_span,
+                });
+                if self.match_kind(TokenKind::Comma) {
+                    continue;
+                }
+                self.expect(TokenKind::RParen)?;
+                break;
+            }
+        }
+        self.expect(TokenKind::Arrow)?;
+        self.expect(TokenKind::ByteTy)?;
+        let (body, end) = self.parse_block_with_span()?;
+        Ok(Function {
+            name,
+            name_span,
+            params,
+            body,
+            span: start.join(end),
+        })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -28,6 +66,7 @@ impl Parser {
             TokenKind::Print => self.parse_print(false),
             TokenKind::Println => self.parse_print(true),
             TokenKind::Read => self.parse_read(),
+            TokenKind::Return => self.parse_return(),
             TokenKind::Break => self.parse_break(),
             TokenKind::Continue => self.parse_continue(),
             TokenKind::LBrace => {
@@ -289,6 +328,13 @@ impl Parser {
             self.expect(TokenKind::Semi)?;
             Ok(Stmt::Read(name, name_span))
         }
+    }
+
+    fn parse_return(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.expect(TokenKind::Return)?.span;
+        let expr = self.parse_expr()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(Stmt::Return(expr, start.join(end)))
     }
 
     fn parse_break(&mut self) -> Result<Stmt, Diagnostic> {
@@ -570,7 +616,26 @@ impl Parser {
             TokenKind::True => Ok(Expr::Byte(1, token.span)),
             TokenKind::False => Ok(Expr::Byte(0, token.span)),
             TokenKind::Ident(name) => {
-                if self.match_kind(TokenKind::LBracket) {
+                if self.match_kind(TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    let end = if self.match_kind(TokenKind::RParen) {
+                        token.span
+                    } else {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.match_kind(TokenKind::Comma) {
+                                continue;
+                            }
+                            break self.expect(TokenKind::RParen)?.span;
+                        }
+                    };
+                    Ok(Expr::Call {
+                        name,
+                        name_span: token.span,
+                        args,
+                        span: token.span.join(end),
+                    })
+                } else if self.match_kind(TokenKind::LBracket) {
                     let index = self.parse_expr()?;
                     let end = self.expect(TokenKind::RBracket)?.span;
                     Ok(Expr::ArrayGet {
@@ -669,6 +734,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Println(_, span)
         | Stmt::Read(_, span)
         | Stmt::ReadArray { span, .. }
+        | Stmt::Return(_, span)
         | Stmt::Break(span)
         | Stmt::Continue(span)
         | Stmt::Block(_, span)

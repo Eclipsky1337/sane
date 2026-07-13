@@ -218,7 +218,12 @@ impl<R: Read, W: Write> Runtime<R, W> {
                 Op::Output => self
                     .output
                     .write_all(&[self.tape[self.ptr]])
-                    .map_err(|err| format!("failed to write output: {err}"))?,
+                    .map_err(|err| format!("failed to write output: {err}"))
+                    .and_then(|_| {
+                        self.output
+                            .flush()
+                            .map_err(|err| format!("failed to flush output: {err}"))
+                    })?,
                 Op::Clear => self.tape[self.ptr] = 0,
                 Op::AddMul(effects) => {
                     let value = self.tape[self.ptr];

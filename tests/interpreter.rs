@@ -1,4 +1,5 @@
 use sane::interpreter::{Op, Program, run_source};
+use std::io::{self, Write};
 
 #[test]
 fn bf_interpreter_runs_basic_programs() {
@@ -12,6 +13,32 @@ fn bf_interpreter_reads_and_writes_bytes() {
     let mut output = Vec::new();
     run_source(",.,.", b"AZ".as_slice(), &mut output).unwrap();
     assert_eq!(output, b"AZ");
+}
+
+#[test]
+fn bf_interpreter_flushes_after_output() {
+    #[derive(Default)]
+    struct FlushCounter {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for FlushCounter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    let mut output = FlushCounter::default();
+    run_source("++..", &[][..], &mut output).unwrap();
+    assert_eq!(output.bytes, [2, 2]);
+    assert_eq!(output.flushes, 2);
 }
 
 #[test]

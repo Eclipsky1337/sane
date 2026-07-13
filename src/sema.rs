@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use crate::ast::{ArrayInit, BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{ArrayInit, BinOp, Expr, Function, Program, Stmt, UnOp};
 use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
+pub const MAX_CALL_DEPTH: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct Symbols {
@@ -46,8 +47,17 @@ pub enum SymbolInfo {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedProgram {
+    pub functions: Vec<ResolvedFunction>,
     pub stmts: Vec<ResolvedStmt>,
+    pub spills: Vec<usize>,
     pub symbols: Symbols,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFunction {
+    pub name: String,
+    pub params: Vec<usize>,
+    pub body: Vec<ResolvedStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +91,7 @@ pub enum ResolvedStmt {
         len: usize,
         index: ResolvedExpr,
     },
+    Return(ResolvedExpr),
     Break,
     Continue,
     Block(Vec<ResolvedStmt>),
@@ -113,6 +124,10 @@ pub enum ResolvedExpr {
         len: usize,
         index: Box<ResolvedExpr>,
     },
+    Call {
+        function: usize,
+        args: Vec<ResolvedExpr>,
+    },
     Unary {
         op: UnOp,
         expr: Box<ResolvedExpr>,
@@ -130,9 +145,23 @@ pub fn analyze(program: &Program) -> Result<Symbols, Diagnostic> {
 
 pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
     let mut resolver = Resolver::new();
+    resolver.define_functions(&program.functions)?;
     let stmts = resolver.resolve_stmts(&program.stmts, 0)?;
+    let functions = resolver.resolve_functions(&program.functions)?;
+    resolver.check_call_graph()?;
+    resolver.check_call_depth()?;
+    let spill_count = count_stmt_calls(&stmts)
+        + functions
+            .iter()
+            .map(|function| count_stmt_calls(&function.body))
+            .sum::<usize>();
+    let spills = (0..spill_count)
+        .map(|_| resolver.alloc_fresh_cell())
+        .collect::<Vec<_>>();
     Ok(ResolvedProgram {
+        functions,
         stmts,
+        spills,
         symbols: Symbols {
             cells: resolver.public_cells,
             entries: resolver.public_entries,
@@ -157,6 +186,11 @@ struct Resolver {
     scopes: Vec<Scope>,
     public_cells: HashMap<String, usize>,
     public_entries: Vec<SymbolInfo>,
+    functions: HashMap<String, usize>,
+    function_names: Vec<String>,
+    function_arities: Vec<usize>,
+    call_graph: Vec<Vec<usize>>,
+    current_function: Option<usize>,
     free_cells: Vec<usize>,
     next_cell: usize,
     high_water: usize,
@@ -168,10 +202,127 @@ impl Resolver {
             scopes: vec![Scope::default()],
             public_cells: HashMap::new(),
             public_entries: Vec::new(),
+            functions: HashMap::new(),
+            function_names: Vec::new(),
+            function_arities: Vec::new(),
+            call_graph: Vec::new(),
+            current_function: None,
             free_cells: Vec::new(),
             next_cell: TEMP_COUNT,
             high_water: TEMP_COUNT,
         }
+    }
+
+    fn define_functions(&mut self, functions: &[Function]) -> Result<(), Diagnostic> {
+        for function in functions {
+            if self.functions.contains_key(&function.name) {
+                return Err(Diagnostic::new(
+                    format!("function `{}` already declared", function.name),
+                    function.name_span,
+                ));
+            }
+            let index = self.function_names.len();
+            self.functions.insert(function.name.clone(), index);
+            self.function_names.push(function.name.clone());
+            self.function_arities.push(function.params.len());
+            self.call_graph.push(Vec::new());
+        }
+        Ok(())
+    }
+
+    fn resolve_functions(
+        &mut self,
+        functions: &[Function],
+    ) -> Result<Vec<ResolvedFunction>, Diagnostic> {
+        let mut resolved = Vec::new();
+        for (index, function) in functions.iter().enumerate() {
+            self.push_scope();
+            let mut params = Vec::new();
+            for param in &function.params {
+                if self.current_scope().names.contains_key(&param.name) {
+                    return Err(Diagnostic::new(
+                        format!("parameter `{}` already declared", param.name),
+                        param.name_span,
+                    ));
+                }
+                let cell = self.alloc_fresh_cell();
+                self.current_scope_mut()
+                    .names
+                    .insert(param.name.clone(), Symbol::Scalar(cell));
+                self.current_scope_mut().owned_cells.push(cell);
+                params.push(cell);
+            }
+            let previous = self.current_function.replace(index);
+            let body = self.resolve_stmts(&function.body, 0)?;
+            self.current_function = previous;
+            self.pop_scope_retain();
+            resolved.push(ResolvedFunction {
+                name: function.name.clone(),
+                params,
+                body,
+            });
+        }
+        Ok(resolved)
+    }
+
+    fn check_call_graph(&self) -> Result<(), Diagnostic> {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Mark {
+            Visiting,
+            Done,
+        }
+
+        fn visit(node: usize, graph: &[Vec<usize>], marks: &mut [Option<Mark>]) -> Result<(), ()> {
+            if marks[node] == Some(Mark::Visiting) {
+                return Err(());
+            }
+            if marks[node] == Some(Mark::Done) {
+                return Ok(());
+            }
+            marks[node] = Some(Mark::Visiting);
+            for &callee in &graph[node] {
+                visit(callee, graph, marks)?;
+            }
+            marks[node] = Some(Mark::Done);
+            Ok(())
+        }
+
+        let mut marks = vec![None; self.call_graph.len()];
+        for node in 0..self.call_graph.len() {
+            if visit(node, &self.call_graph, &mut marks).is_err() {
+                return Err(Diagnostic::bare(
+                    "recursive function calls are not supported",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_call_depth(&self) -> Result<(), Diagnostic> {
+        fn depth(node: usize, graph: &[Vec<usize>], memo: &mut [Option<usize>]) -> usize {
+            if let Some(value) = memo[node] {
+                return value;
+            }
+            let value = 1 + graph[node]
+                .iter()
+                .map(|&callee| depth(callee, graph, memo))
+                .max()
+                .unwrap_or(0);
+            memo[node] = Some(value);
+            value
+        }
+
+        let mut memo = vec![None; self.call_graph.len()];
+        let max_depth = (0..self.call_graph.len())
+            .map(|node| depth(node, &self.call_graph, &mut memo))
+            .max()
+            .unwrap_or(0);
+        if max_depth > MAX_CALL_DEPTH {
+            return Err(Diagnostic::bare(format!(
+                "function call depth {max_depth} exceeds limit {MAX_CALL_DEPTH}"
+            )));
+        }
+        Ok(())
     }
 
     fn resolve_stmts(
@@ -214,7 +365,7 @@ impl Resolver {
                     .as_ref()
                     .map(|expr| self.resolve_expr(expr))
                     .transpose()?;
-                let cell = self.alloc_cell();
+                let cell = self.alloc_scope_cell();
                 self.current_scope_mut()
                     .names
                     .insert(name.clone(), Symbol::Scalar(cell));
@@ -242,7 +393,7 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                let base = self.alloc_block(4 + *len);
+                let base = self.alloc_scope_block(4 + *len);
                 self.current_scope_mut()
                     .names
                     .insert(name.clone(), Symbol::Array { base, len: *len });
@@ -316,6 +467,12 @@ impl Resolver {
                     len,
                     index: self.resolve_expr(index)?,
                 })
+            }
+            Stmt::Return(expr, span) => {
+                if self.current_function.is_none() {
+                    return Err(Diagnostic::new("`return` outside function", *span));
+                }
+                Ok(ResolvedStmt::Return(self.resolve_expr(expr)?))
             }
             Stmt::Break(span) => {
                 if loop_depth == 0 {
@@ -420,6 +577,36 @@ impl Resolver {
                     index: Box::new(self.resolve_expr(index)?),
                 })
             }
+            Expr::Call {
+                name,
+                name_span,
+                args,
+                ..
+            } => {
+                let function = self.functions.get(name).copied().ok_or_else(|| {
+                    Diagnostic::new(format!("call to undeclared function `{name}`"), *name_span)
+                })?;
+                if args.len() != self.function_arities[function] {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "function `{name}` expects {} arguments, got {}",
+                            self.function_arities[function],
+                            args.len()
+                        ),
+                        *name_span,
+                    ));
+                }
+                if let Some(caller) = self.current_function {
+                    if !self.call_graph[caller].contains(&function) {
+                        self.call_graph[caller].push(function);
+                    }
+                }
+                let args = args
+                    .iter()
+                    .map(|arg| self.resolve_expr(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(ResolvedExpr::Call { function, args })
+            }
             Expr::Unary { op, expr, .. } => Ok(ResolvedExpr::Unary {
                 op: *op,
                 expr: Box::new(self.resolve_expr(expr)?),
@@ -456,18 +643,32 @@ impl Resolver {
         }
     }
 
-    fn alloc_cell(&mut self) -> usize {
+    fn alloc_scope_cell(&mut self) -> usize {
+        if self.current_function.is_some() {
+            return self.alloc_fresh_cell();
+        }
         if let Some(cell) = self.free_cells.pop() {
             cell
         } else {
-            let cell = self.next_cell;
-            self.next_cell += 1;
-            self.high_water = self.high_water.max(self.next_cell);
-            cell
+            self.alloc_fresh_cell()
         }
     }
 
-    fn alloc_block(&mut self, len: usize) -> usize {
+    fn alloc_fresh_cell(&mut self) -> usize {
+        let cell = self.next_cell;
+        self.next_cell += 1;
+        self.high_water = self.high_water.max(self.next_cell);
+        cell
+    }
+
+    fn alloc_scope_block(&mut self, len: usize) -> usize {
+        if self.current_function.is_some() {
+            return self.alloc_fresh_block(len);
+        }
+        self.alloc_fresh_block(len)
+    }
+
+    fn alloc_fresh_block(&mut self, len: usize) -> usize {
         let base = self.next_cell;
         self.next_cell += len;
         self.high_water = self.high_water.max(self.next_cell);
@@ -480,8 +681,14 @@ impl Resolver {
 
     fn pop_scope(&mut self) {
         let scope = self.scopes.pop().expect("resolver always has a scope");
-        self.free_cells.extend(scope.owned_cells);
-        self.free_cells.sort_by(|a, b| b.cmp(a));
+        if self.current_function.is_none() {
+            self.free_cells.extend(scope.owned_cells);
+            self.free_cells.sort_by(|a, b| b.cmp(a));
+        }
+    }
+
+    fn pop_scope_retain(&mut self) {
+        self.scopes.pop().expect("resolver always has a scope");
     }
 
     fn current_scope(&self) -> &Scope {
@@ -566,7 +773,7 @@ fn resolve_array_init(init: Option<&ArrayInit>, len: usize) -> Result<Vec<u8>, D
 fn const_eval(expr: &Expr) -> Option<u8> {
     match expr {
         Expr::Byte(value, _) => Some(*value),
-        Expr::Var(_, _) | Expr::ArrayGet { .. } => None,
+        Expr::Var(_, _) | Expr::ArrayGet { .. } | Expr::Call { .. } => None,
         Expr::Unary { op, expr, .. } => {
             let value = const_eval(expr)?;
             Some(match op {
@@ -623,6 +830,57 @@ fn const_eval(expr: &Expr) -> Option<u8> {
                 BinOp::Gt => u8::from(left > right),
                 BinOp::Ge => u8::from(left >= right),
             })
+        }
+    }
+}
+
+fn count_stmt_calls(stmts: &[ResolvedStmt]) -> usize {
+    stmts.iter().map(count_stmt_call).sum()
+}
+
+fn count_stmt_call(stmt: &ResolvedStmt) -> usize {
+    match stmt {
+        ResolvedStmt::Let { init, .. } => init.as_ref().map_or(0, count_expr_calls),
+        ResolvedStmt::LetArray { .. } | ResolvedStmt::Puts(_) | ResolvedStmt::Read(_) => 0,
+        ResolvedStmt::Assign { expr, .. }
+        | ResolvedStmt::Put(expr)
+        | ResolvedStmt::Print(expr)
+        | ResolvedStmt::Println(expr)
+        | ResolvedStmt::Return(expr) => count_expr_calls(expr),
+        ResolvedStmt::ArraySet { index, expr, .. } => {
+            count_expr_calls(index) + count_expr_calls(expr)
+        }
+        ResolvedStmt::ReadArray { index, .. } => count_expr_calls(index),
+        ResolvedStmt::Break | ResolvedStmt::Continue => 0,
+        ResolvedStmt::Block(stmts) | ResolvedStmt::Loop { body: stmts } => count_stmt_calls(stmts),
+        ResolvedStmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => count_expr_calls(cond) + count_stmt_calls(then_branch) + count_stmt_calls(else_branch),
+        ResolvedStmt::While { cond, body } => count_expr_calls(cond) + count_stmt_calls(body),
+        ResolvedStmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            init.as_deref().map_or(0, count_stmt_call)
+                + cond.as_ref().map_or(0, count_expr_calls)
+                + step.as_deref().map_or(0, count_stmt_call)
+                + count_stmt_calls(body)
+        }
+    }
+}
+
+fn count_expr_calls(expr: &ResolvedExpr) -> usize {
+    match expr {
+        ResolvedExpr::Byte(_) | ResolvedExpr::Var(_) => 0,
+        ResolvedExpr::ArrayGet { index, .. } => count_expr_calls(index),
+        ResolvedExpr::Call { args, .. } => 1 + args.iter().map(count_expr_calls).sum::<usize>(),
+        ResolvedExpr::Unary { expr, .. } => count_expr_calls(expr),
+        ResolvedExpr::Binary { left, right, .. } => {
+            count_expr_calls(left) + count_expr_calls(right)
         }
     }
 }
