@@ -57,6 +57,18 @@ let key: byte[4] = [1, 2, 3, 4];
 let text: byte[6] = "hello\n";
 ```
 
+When an initializer is present, the array length may be inferred:
+
+```sane
+let key = [1, 2, 3, 4];
+let text = "hello\n";
+```
+
+List length is the number of initializer elements. String length is the number
+of decoded ASCII bytes. An empty list is rejected because its element type
+cannot be inferred; an empty string creates a zero-length byte array. Explicit
+syntax remains required for an uninitialized array.
+
 An initializer must contain exactly the declared number of bytes. String
 initializers are ASCII-only and do not receive an implicit trailing `\0`.
 
