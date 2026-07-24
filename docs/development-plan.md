@@ -11,6 +11,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] inferred array declarations
   - [x] compile-time constants
 - [x] Phase 1.5: compile-time formatted output
+- [x] Phase 1.6: typed decimal and raw-byte format placeholders
 - [x] Release 1.2: version, documentation, validation, and tag
 - [ ] Phase 2: P1 PC measurement and optimization
 - [ ] Phase 3: P3 item 13 debug symbols
@@ -26,10 +27,11 @@ and Collatz example checks.
 - Interpreter/debugger: `sanei`
 - Current release: `v1.2.0`
 - Current development branch: `dev`
-- `main` and `v1.2.0` contain the completed Phase 1 language work
+- `main` and `v1.2.0` contain the completed Phase 1 language work; `dev` adds
+  typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 109 tests
+- The full test suite currently contains 110 tests
 
 Before starting work:
 
@@ -58,7 +60,7 @@ Implemented language features:
 - arithmetic, comparisons, logical operators, bitwise operators, and shifts
 - `if`, `while`, `loop`, `for`, `break`, and `continue`
 - byte and decimal input/output statements
-- compile-time checked formatted decimal output
+- compile-time checked decimal and raw-byte formatted output
 - byte and void functions, parameters, returns, expression calls, and call
   statements
 

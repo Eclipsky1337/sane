@@ -194,14 +194,15 @@ expressions:
 
 ```sane
 print "round: {} value: {}\n", round, value;
+print "player {:c} score: {:d}\n", player, score;
 print "result: {{{}}}\n", result;
 ```
 
-Each `{}` writes one argument as decimal text. `{{` and `}}` write literal
-braces. The number of placeholders must match the number of arguments. Output
-is streamed from left to right, so each expression is evaluated when its
-placeholder is reached. Runtime format strings and format specifiers are not
-supported.
+`{}` and `{:d}` write one argument as decimal text. `{:c}` writes one argument
+as a raw byte, matching `put`. `{{` and `}}` write literal braces. The number of
+placeholders must match the number of arguments. Output is streamed from left
+to right, so each expression is evaluated when its placeholder is reached.
+Runtime format strings and other format specifiers are not supported.
 
 ## Control Flow
 

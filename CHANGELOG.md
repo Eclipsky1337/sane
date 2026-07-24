@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added `{:c}` raw-byte and `{:d}` explicit-decimal placeholders to formatted
+  `print` output while keeping `{}` as the decimal shorthand.
+
 ## 1.2.0
 
 - Made backend selection automatic: function-free programs use the structured
