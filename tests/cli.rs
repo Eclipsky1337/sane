@@ -1,10 +1,56 @@
 mod common;
 
+use std::env;
+use std::fs;
 use std::io::Write;
-use std::process::{Command, Stdio};
-use std::{env, fs};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::run_bf;
+
+static TEMP_FILE_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn run_sanec(args: &[&str], source: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sanec"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(source.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn run_debugger(name: &str, program: &str, commands: &str) -> String {
+    let id = TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
+    let path = env::temp_dir().join(format!("sane-{name}-{}-{id}.bf", std::process::id()));
+    fs::write(&path, program).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
+        .arg("-d")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(commands.as_bytes())
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap()
+}
 
 #[test]
 fn sanec_help_describes_arguments_and_options() {
@@ -19,31 +65,53 @@ fn sanec_help_describes_arguments_and_options() {
     assert!(help.contains("source.sn       Read Sane source from file"));
     assert!(help.contains("-o <file>       Write Brainfuck output to <file>"));
     assert!(help.contains("-s              Add BF-safe symbol table comments"));
-    assert!(help.contains("-b <backend>    Select backend: structured or pc"));
+    assert!(
+        help.contains("-b <backend>    Select backend: auto, structured, or pc (default: auto)")
+    );
 }
 
 #[test]
 fn sanec_can_compile_with_pc_backend() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanec"))
-        .arg("-b")
-        .arg("pc")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"let x = 3; while x { put '0' + x; x -= 1; }")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
+    let output = run_sanec(&["-b", "pc"], "let x = 3; while x { put '0' + x; x -= 1; }");
     assert!(output.status.success());
+    assert_eq!(
+        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
+        b"321"
+    );
+}
 
-    let bf = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(run_bf(&bf, &[]), b"321");
+#[test]
+fn sanec_automatically_selects_pc_for_functions() {
+    let output = run_sanec(&[], "fn value() -> byte { return 42; } println value();");
+    assert!(output.status.success());
+    assert_eq!(
+        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
+        b"42\n"
+    );
+}
+
+#[test]
+fn sanec_can_explicitly_select_auto_backend() {
+    let output = run_sanec(&["-b", "auto"], "put 'A';");
+    assert!(output.status.success());
+    assert_eq!(
+        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
+        b"A"
+    );
+}
+
+#[test]
+fn sanec_forced_structured_backend_rejects_functions() {
+    let output = run_sanec(
+        &["-b", "structured"],
+        "fn value() -> byte { return 42; } println value();",
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("functions require the pc backend"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -64,21 +132,7 @@ fn sanei_help_describes_arguments_and_options() {
 
 #[test]
 fn sanec_can_annotate_symbols_in_brainfuck_output() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanec"))
-        .arg("-s")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"let x = 'A'; let msg: byte[2] = \"hi\"; put x;")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
+    let output = run_sanec(&["-s"], "let x = 'A'; let msg: byte[2] = \"hi\"; put x;");
     assert!(output.status.success());
 
     let bf = String::from_utf8(output.stdout).unwrap();
@@ -99,37 +153,12 @@ fn sanec_can_annotate_symbols_in_brainfuck_output() {
 
 #[test]
 fn sanei_debugger_supports_stepping_breakpoints_and_tape_inspection() {
-    let path = env::temp_dir().join(format!("sane-debug-{}.bf", std::process::id()));
-    fs::write(&path, "++>+<.").unwrap();
+    let stdout = run_debugger(
+        "debug",
+        "++>+<.",
+        "s 2\npc\nb 5\nbreakpoints\nc\nx/2d 0\nx/xw 0\nq\n",
+    );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            b"s 2\n\
-              pc\n\
-              b 5\n\
-              breakpoints\n\
-              c\n\
-              x/2d 0\n\
-              x/xw 0\n\
-              q\n",
-        )
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("sanei debug mode"));
     assert!(stdout.contains("pc=2 inst='>' ptr=0 cell[0]=2 state=paused"));
     assert!(stdout.contains("pc=2"));
@@ -142,28 +171,8 @@ fn sanei_debugger_supports_stepping_breakpoints_and_tape_inspection() {
 
 #[test]
 fn sanei_debugger_next_stops_before_matching_instruction() {
-    let path = env::temp_dir().join(format!("sane-debug-next-{}.bf", std::process::id()));
-    fs::write(&path, "++>+<.").unwrap();
+    let stdout = run_debugger("debug-next", "++>+<.", "next >\npc\ns\nnext .\ninst\nq\n");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"next >\npc\ns\nnext .\ninst\nq\n")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("next pc=2 inst='>'"));
     assert!(stdout.contains("pc=2"));
     assert!(stdout.contains("pc=3 inst='+' ptr=1 cell[1]=0 state=paused"));
@@ -173,30 +182,12 @@ fn sanei_debugger_next_stops_before_matching_instruction() {
 
 #[test]
 fn sanei_debugger_supports_info_watchpoints_and_set() {
-    let path = env::temp_dir().join(format!("sane-debug-watch-{}.bf", std::process::id()));
-    fs::write(&path, "++").unwrap();
+    let stdout = run_debugger(
+        "debug-watch",
+        "++",
+        "info\nwatch 0\nwatchpoints\nunwatch 0\nwatchpoints\nwatch 0\ns\nset 0 7\nx/d 0\nq\n",
+    );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            b"info\nwatch 0\nwatchpoints\nunwatch 0\nwatchpoints\nwatch 0\ns\nset 0 7\nx/d 0\nq\n",
-        )
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("breakpoints=0 watchpoints=0"));
     assert!(stdout.contains("watchpoint cell=0 value=0"));
     assert!(stdout.contains("watchpoints deleted 1"));
@@ -208,28 +199,8 @@ fn sanei_debugger_supports_info_watchpoints_and_set() {
 
 #[test]
 fn sanei_debugger_repeats_last_command_on_empty_line() {
-    let path = env::temp_dir().join(format!("sane-debug-repeat-{}.bf", std::process::id()));
-    fs::write(&path, "+++.").unwrap();
+    let stdout = run_debugger("debug-repeat", "+++.", "s\n\npc\nx/d 0\nq\n");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"s\n\npc\nx/d 0\nq\n")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pc=1 inst='+' ptr=0 cell[0]=1 state=paused"));
     assert!(stdout.contains("pc=2 inst='+' ptr=0 cell[0]=2 state=paused"));
     assert!(stdout.contains("pc=2"));
@@ -238,28 +209,8 @@ fn sanei_debugger_repeats_last_command_on_empty_line() {
 
 #[test]
 fn sanei_debugger_restart_uses_gdb_style_r_command() {
-    let path = env::temp_dir().join(format!("sane-debug-restart-{}.bf", std::process::id()));
-    fs::write(&path, "++").unwrap();
+    let stdout = run_debugger("debug-restart", "++", "s 2\nr\npc\nx/d 0\nq\n");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"s 2\nr\npc\nx/d 0\nq\n")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("restarted"));
     assert!(stdout.contains("pc=0"));
     assert!(stdout.contains("0 0"));
@@ -267,47 +218,16 @@ fn sanei_debugger_restart_uses_gdb_style_r_command() {
 
 #[test]
 fn sanei_debugger_reads_sane_symbols() {
-    let path = env::temp_dir().join(format!("sane-debug-symbols-{}.bf", std::process::id()));
-    fs::write(
-        &path,
+    let stdout = run_debugger(
+        "debug-symbols",
         "SANE SYMBOLS\n\
          x CELL 8\n\
          arr ARRAY BASE 9 LEN 2 DATA CELLS 13 TO 14\n\
          END SANE SYMBOLS\n\
          +",
-    )
-    .unwrap();
+        "symbols\nsymbol arr\nset x 9\nset arr[1] 7\nx/d x\nx/2xb arr\nx/d arr[1]\nx/d arr+1\nx/d x\nq\n",
+    );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            b"symbols\n\
-              symbol arr\n\
-              set x 9\n\
-              set arr[1] 7\n\
-              x/d x\n\
-              x/2xb arr\n\
-              x/d arr[1]\n\
-              x/d arr+1\n\
-              x/d x\n\
-              q\n",
-        )
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("x cell 8"));
     assert!(stdout.contains("arr array base 9 len 2 data 13 to 14"));
     assert!(stdout.contains("cell[8]=9"));
@@ -320,35 +240,15 @@ fn sanei_debugger_reads_sane_symbols() {
 
 #[test]
 fn sanei_debugger_watches_entire_array_symbol() {
-    let path = env::temp_dir().join(format!("sane-debug-array-watch-{}.bf", std::process::id()));
-    fs::write(
-        &path,
+    let stdout = run_debugger(
+        "debug-array-watch",
         "SANE SYMBOLS\n\
          arr ARRAY BASE 9 LEN 2 DATA CELLS 0 TO 1\n\
          END SANE SYMBOLS\n\
          >+",
-    )
-    .unwrap();
+        "watch arr\nwatchpoints\nc\nq\n",
+    );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"watch arr\nwatchpoints\nc\nq\n")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("watchpoint cell=0 value=0"));
     assert!(stdout.contains("watchpoint cell=1 value=0"));
     assert!(stdout.contains("watchpoint cell=1 old=0 new=1"));
@@ -356,38 +256,15 @@ fn sanei_debugger_watches_entire_array_symbol() {
 
 #[test]
 fn sanei_debugger_unwatches_entire_array_symbol() {
-    let path = env::temp_dir().join(format!(
-        "sane-debug-array-unwatch-{}.bf",
-        std::process::id()
-    ));
-    fs::write(
-        &path,
+    let stdout = run_debugger(
+        "debug-array-unwatch",
         "SANE SYMBOLS\n\
          arr ARRAY BASE 9 LEN 2 DATA CELLS 0 TO 1\n\
          END SANE SYMBOLS\n\
          >+",
-    )
-    .unwrap();
+        "watch arr\nunwatch arr\nwatchpoints\nc\nq\n",
+    );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sanei"))
-        .arg("-d")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"watch arr\nunwatch arr\nwatchpoints\nc\nq\n")
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("watchpoints deleted 2"));
     assert!(stdout.contains("no watchpoints"));
     assert!(!stdout.contains("old=0 new=1"));
