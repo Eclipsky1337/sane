@@ -27,7 +27,7 @@ sanei program.bf
 Program input is read from standard input:
 
 ```sh
-printf 1230 | sanei luhn4.bf
+printf "7\n" | sanei collatz.bf
 ```
 
 EOF stores zero in the current cell. The interpreter uses a 30,000-cell tape

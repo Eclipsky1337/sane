@@ -180,6 +180,20 @@ print 42;         // decimal text: 42
 println 255;      // decimal text followed by newline
 ```
 
+`print` also accepts a compile-time format string followed by byte
+expressions:
+
+```sane
+print "round: {} value: {}\n", round, value;
+print "result: {{{}}}\n", result;
+```
+
+Each `{}` writes one argument as decimal text. `{{` and `}}` write literal
+braces. The number of placeholders must match the number of arguments. Output
+is streamed from left to right, so each expression is evaluated when its
+placeholder is reached. Runtime format strings and format specifiers are not
+supported.
+
 ## Control Flow
 
 Conditions use byte truthiness: zero is false and non-zero is true.

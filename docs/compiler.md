@@ -42,6 +42,9 @@ Constants can define byte expressions and explicit array lengths. Array lengths
 may also be inferred from list and string initializers; see the
 [Language Reference](language.md) for syntax and scope rules.
 
+Formatted output such as `print "step {}: {}\n", step, value;` is validated at
+compile time and lowered to literal byte output plus decimal byte formatting.
+
 ## Backends
 
 The default `auto` mode selects the structured backend for programs without
@@ -113,7 +116,6 @@ status.
 ## Examples
 
 ```sh
-sanec examples/luhn4.sn -o luhn4.bf
 sanec examples/toy_aes_round.sn -o toy.bf -s
 sanec examples/Collatz.sn -o collatz.bf
 ```

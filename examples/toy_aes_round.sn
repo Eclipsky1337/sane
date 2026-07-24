@@ -5,44 +5,45 @@
 // state matches the original plaintext.
 //
 // This is not AES. It is a compact, testable cipher-shaped example using:
-// - fixed-size arrays and array initializers
+// - constants, fixed-size arrays, and inferred array initializers
 // - dynamic S-box and inverse S-box lookup
 // - AddRoundKey-style XOR
 // - ShiftRows-style permutation and inverse permutation
 // - reversible pair mixing and inverse mixing
 // - loops, conditionals, bitwise operations, and formatted output
 
-let sbox: byte[16] = [
+const BLOCK_SIZE = 16;
+const ROUND_COUNT = 2;
+const NIBBLE_BITS = 4;
+const NIBBLE_MASK = 0x0f;
+const PAIR_SIZE = 2;
+
+let sbox = [
     0x6, 0x4, 0xc, 0x5,
     0x0, 0x7, 0x2, 0xe,
     0x1, 0xf, 0x3, 0xd,
     0x8, 0xa, 0x9, 0xb,
 ];
 
-let inv_sbox: byte[16] = [
+let inv_sbox = [
     0x4, 0x8, 0x6, 0xa,
     0x1, 0x3, 0x0, 0x5,
     0xc, 0xe, 0xd, 0xf,
     0x2, 0xb, 0x7, 0x9,
 ];
 
-let hex: byte[16] = [
-    '0', '1', '2', '3',
-    '4', '5', '6', '7',
-    '8', '9', 'A', 'B',
-    'C', 'D', 'E', 'F',
-];
+let hex = "0123456789ABCDEF";
 
-let key: byte[16] = [
+let key = [
     0x2b, 0x7e, 0x15, 0x16,
     0x28, 0xae, 0xd2, 0xa6,
     0xab, 0xf7, 0x15, 0x88,
     0x09, 0xcf, 0x4f, 0x3c,
 ];
 
-let plain: byte[16];
-let state: byte[16];
-let temp: byte[16];
+let plain: byte[BLOCK_SIZE];
+let state: byte[BLOCK_SIZE];
+let temp: byte[BLOCK_SIZE];
 let i = 0;
 let round = 0;
 let b = 0;
@@ -53,9 +54,9 @@ let right = 0;
 let tweak = 0;
 let ok = true;
 
-puts "toy-aes:";
+print "toy-aes:";
 
-while i < 16 {
+while i < BLOCK_SIZE {
     read plain[i];
     state[i] = plain[i];
     i += 1;
@@ -63,10 +64,10 @@ while i < 16 {
 
 // Encrypt.
 round = 0;
-while round < 2 {
+while round < ROUND_COUNT {
     // AddRoundKey.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         state[i] ^= key[i];
         state[i] ^= round;
         i += 1;
@@ -74,17 +75,17 @@ while round < 2 {
 
     // SubBytes with a 4-bit S-box applied to each nibble.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         b = state[i];
-        hi = b >> 4;
-        lo = b & 0x0f;
-        state[i] = (sbox[hi] << 4) | sbox[lo];
+        hi = b >> NIBBLE_BITS;
+        lo = b & NIBBLE_MASK;
+        state[i] = (sbox[hi] << NIBBLE_BITS) | sbox[lo];
         i += 1;
     }
 
     // ShiftRows on a 4x4 row-major state.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         temp[i] = state[i];
         i += 1;
     }
@@ -109,7 +110,7 @@ while round < 2 {
     // left'  = left + (right ^ tweak)
     // right' = right ^ left'
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         left = state[i];
         right = state[i + 1];
         tweak = round ^ i;
@@ -117,7 +118,7 @@ while round < 2 {
         right ^= left;
         state[i] = left;
         state[i + 1] = right;
-        i += 2;
+        i += PAIR_SIZE;
     }
 
     round += 1;
@@ -125,23 +126,23 @@ while round < 2 {
 
 // Print ciphertext.
 i = 0;
-while i < 16 {
+while i < BLOCK_SIZE {
     b = state[i];
-    hi = b >> 4;
-    lo = b & 0x0f;
+    hi = b >> NIBBLE_BITS;
+    lo = b & NIBBLE_MASK;
     put hex[hi];
     put hex[lo];
     i += 1;
 }
 
 // Decrypt.
-round = 2;
+round = ROUND_COUNT;
 while round > 0 {
     round -= 1;
 
     // Inverse pair mix.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         left = state[i];
         right = state[i + 1];
         tweak = round ^ i;
@@ -149,12 +150,12 @@ while round > 0 {
         left -= right ^ tweak;
         state[i] = left;
         state[i + 1] = right;
-        i += 2;
+        i += PAIR_SIZE;
     }
 
     // Inverse ShiftRows.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         temp[i] = state[i];
         i += 1;
     }
@@ -177,17 +178,17 @@ while round > 0 {
 
     // Inverse SubBytes.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         b = state[i];
-        hi = b >> 4;
-        lo = b & 0x0f;
-        state[i] = (inv_sbox[hi] << 4) | inv_sbox[lo];
+        hi = b >> NIBBLE_BITS;
+        lo = b & NIBBLE_MASK;
+        state[i] = (inv_sbox[hi] << NIBBLE_BITS) | inv_sbox[lo];
         i += 1;
     }
 
     // AddRoundKey is its own inverse.
     i = 0;
-    while i < 16 {
+    while i < BLOCK_SIZE {
         state[i] ^= round;
         state[i] ^= key[i];
         i += 1;
@@ -196,7 +197,7 @@ while round > 0 {
 
 // Verify decrypt(encrypt(input)) == input.
 i = 0;
-while i < 16 {
+while i < BLOCK_SIZE {
     if state[i] != plain[i] {
         ok = false;
     }
@@ -204,7 +205,7 @@ while i < 16 {
 }
 
 if ok {
-    puts " ok\n";
+    print " ok\n";
 } else {
-    puts " fail\n";
+    print " fail\n";
 }

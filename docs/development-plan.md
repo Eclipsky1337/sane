@@ -10,6 +10,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] void functions and call statements
   - [x] inferred array declarations
   - [x] compile-time constants
+- [x] Phase 1.5: compile-time formatted output
 - [ ] Phase 2: P1 PC measurement and optimization
 - [ ] Phase 3: P3 item 13 debug symbols
 
@@ -26,7 +27,7 @@ Phase 1 passed `cargo fmt -- --check`, `cargo test --locked`,
 - `main` and `v1.1.0` point to `584f1dc`; `dev` contains post-1.1 work
 - Package version: `1.1.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 106 tests
+- The full test suite currently contains 109 tests
 
 Before starting work:
 
@@ -55,6 +56,7 @@ Implemented language features:
 - arithmetic, comparisons, logical operators, bitwise operators, and shifts
 - `if`, `while`, `loop`, `for`, `break`, and `continue`
 - byte and decimal input/output statements
+- compile-time checked formatted decimal output
 - byte and void functions, parameters, returns, expression calls, and call
   statements
 
@@ -129,7 +131,6 @@ They are reference values, not exact assertions for future tests.
 Representative inputs:
 
 ```text
-examples/luhn4.sn          1230
 examples/toy_aes_round.sn  ABCDEFGHIJKLMNOP
 examples/Collatz.sn        7\n
 ```
@@ -138,7 +139,6 @@ Static IR:
 
 | Program | Blocks | Ordinary ops | Empty-op blocks | Trivial jumps | Unreachable |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `luhn4` | 37 | 30 | 20 | 11 | 0 |
 | `toy_aes_round` | 46 | 112 | 18 | 2 | 0 |
 | `Collatz` | 26 | 13 | 19 | 11 | 6 |
 
@@ -146,7 +146,6 @@ Dynamic PC execution:
 
 | Program | Dispatches | Used blocks | Empty-op dispatches | Sequential transitions |
 | --- | ---: | ---: | ---: | ---: |
-| `luhn4` | 25 | 25/37 | 80.0% | 33.3% |
 | `toy_aes_round` | 629 | 44/46 | 52.9% | 48.9% |
 | `Collatz` | 171 | 19/26 | 68.4% | 30.0% |
 
@@ -154,7 +153,6 @@ Generated BF instruction counts:
 
 | Program | PC backend | Structured backend |
 | --- | ---: | ---: |
-| `luhn4` | 29,245 | 10,647 |
 | `toy_aes_round` | 496,755 | 554,894 |
 | `Collatz` | 65,074 | unavailable because it uses functions |
 
@@ -196,10 +194,10 @@ searching.
 Acceptance examples:
 
 ```sh
-sanec examples/luhn4.sn -o luhn.bf
+sanec examples/toy_aes_round.sn -o toy.bf
 sanec examples/Collatz.sn -o collatz.bf
 sanec -b structured examples/Collatz.sn
-sanec -b pc examples/luhn4.sn -o luhn-pc.bf
+sanec -b pc examples/toy_aes_round.sn -o toy-pc.bf
 ```
 
 The first two commands must compile. The third must fail with an actionable
@@ -302,7 +300,7 @@ first version may require the final length to be a non-zero byte value.
 ## Phase 2: P1 PC Measurement And Optimization
 
 Do not optimize from intuition. Add observability first and retain before/after
-measurements for the three reference programs.
+measurements for the two reference programs.
 
 ### 5. IR Statistics
 
@@ -366,7 +364,7 @@ Do not implement a multi-cell PC in this phase.
 
 ### Phase 2 Completion Criteria
 
-- before/after numbers are recorded for all three reference examples
+- before/after numbers are recorded for both reference examples
 - PC optimization preserves exact program output
 - no regression in structured-backend output behavior
 - BF size growth, if any, is explicitly justified by execution improvement

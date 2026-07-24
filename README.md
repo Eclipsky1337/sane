@@ -9,7 +9,7 @@ Sane supports byte and void functions through the basic-block IR of the
 experimental `pc` backend. The compiler automatically uses the structured
 backend for programs without functions and the PC backend for programs with
 functions. The language also supports compile-time byte constants and inferred
-array declarations.
+array declarations, plus compile-time checked formatted output.
 
 ## Quick Start
 
@@ -48,7 +48,6 @@ The examples are complete programs rather than syntax test cases:
 
 | Program | Description |
 | --- | --- |
-| `examples/luhn4.sn` | Validates a four-digit Luhn checksum. |
 | `examples/toy_aes_round.sn` | Runs an AES-inspired encrypt/decrypt round trip. |
 | `examples/Collatz.sn` | Prints a Collatz sequence using a byte function. |
 
