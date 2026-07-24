@@ -5,9 +5,10 @@ Sane is a small programming language that compiles to 8-bit Brainfuck.
 - `sanec` compiles Sane source (`.sn`) to Brainfuck (`.bf`).
 - `sanei` runs and debugs Brainfuck programs.
 
-Sane 1.1 adds byte functions and a basic-block IR through the experimental
-`pc` backend. The compiler automatically uses the structured backend for
-programs without functions and the PC backend for programs with functions.
+Sane supports byte and void functions through the basic-block IR of the
+experimental `pc` backend. The compiler automatically uses the structured
+backend for programs without functions and the PC backend for programs with
+functions.
 
 ## Quick Start
 

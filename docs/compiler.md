@@ -51,7 +51,8 @@ sanec -b structured program.sn -o program.bf
 ```
 
 The experimental `pc` backend lowers the program to basic-block IR and emits a
-Brainfuck dispatcher loop. It supports byte functions, calls, and returns:
+Brainfuck dispatcher loop. It supports byte and void functions, expression and
+statement calls, and returns:
 
 ```sh
 sanec -b pc examples/Collatz.sn -o collatz.bf

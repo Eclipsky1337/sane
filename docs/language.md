@@ -201,7 +201,8 @@ condition.
 
 ## Functions
 
-Functions accept byte parameters and return one byte:
+Functions accept byte parameters. A `-> byte` return type defines a byte
+function:
 
 ```sane
 fn add(a: byte, b: byte) -> byte {
@@ -220,6 +221,21 @@ let x = add(1, 2) + add(3, 4);
 return add(x, add(5, 6));
 ```
 
+Omitting the return type defines a void function. Void functions may use
+`return;` or fall through the end of their body:
+
+```sane
+fn show(value: byte) {
+    println value;
+}
+
+show(42);
+```
+
+Calls may be standalone statements. A byte-returning call used as a statement
+discards its result. A void call cannot be used where an expression value is
+required.
+
 Functions are currently supported only by the PC backend. Compile a function
 program with `sanec`; the compiler automatically selects the PC backend when
 functions are present. Use `sanec -b structured` only when intentionally
@@ -229,8 +245,9 @@ Each function has a statically allocated frame for its parameters and local
 variables. Nested calls are supported, but recursive call graphs are rejected.
 The return-address stack allows at most 16 simultaneously active calls.
 
-Every reachable path through a function must return a value. `return` is valid
-only inside a function.
+Every reachable path through a byte function must return a value with
+`return expression;`. Void functions may use only `return;`. Both return forms
+are valid only inside a function.
 
 ## Expressions
 
@@ -281,6 +298,7 @@ x % 0 == x
 - The only value type is `byte`.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
-- Function parameters, locals, and return values are bytes.
+- Function parameters and locals are bytes; functions return either a byte or
+  no value.
 - Recursive function call graphs are rejected.
 - Source files are compiled independently; there are no modules.
