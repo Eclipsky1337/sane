@@ -1,0 +1,100 @@
+// A two-player tic-tac-toe game.
+//
+// Players enter a board position from 1 to 9 followed by Enter. The board
+// keeps unoccupied position numbers visible so each move remains easy to pick.
+
+const BOARD_SIZE = 9;
+const FIRST_POSITION = '1';
+const LAST_POSITION = '9';
+const PLAYER_X = 'X';
+const PLAYER_O = 'O';
+
+let board = "123456789";
+
+fn show_board() {
+    puts "\n";
+    put board[0];
+    puts " | ";
+    put board[1];
+    puts " | ";
+    put board[2];
+    puts "\n--+---+--\n";
+    put board[3];
+    puts " | ";
+    put board[4];
+    puts " | ";
+    put board[5];
+    puts "\n--+---+--\n";
+    put board[6];
+    puts " | ";
+    put board[7];
+    puts " | ";
+    put board[8];
+    puts "\n\n";
+}
+
+fn has_line(mark: byte, first: byte, second: byte, third: byte) -> byte {
+    return board[first] == mark && board[second] == mark && board[third] == mark;
+}
+
+fn has_won(mark: byte) -> byte {
+    return has_line(mark, 0, 1, 2)
+        || has_line(mark, 3, 4, 5)
+        || has_line(mark, 6, 7, 8)
+        || has_line(mark, 0, 3, 6)
+        || has_line(mark, 1, 4, 7)
+        || has_line(mark, 2, 5, 8)
+        || has_line(mark, 0, 4, 8)
+        || has_line(mark, 2, 4, 6);
+}
+
+puts "Sane tic-tac-toe\n";
+show_board();
+
+let player = PLAYER_X;
+let moves = 0;
+let input = 0;
+let newline = 0;
+let position = 0;
+let accepted = false;
+
+while moves < BOARD_SIZE {
+    puts "player ";
+    put player;
+    puts ", choose 1-9: ";
+    read input;
+    read newline;
+
+    accepted = false;
+    if input >= FIRST_POSITION && input <= LAST_POSITION {
+        position = input - FIRST_POSITION;
+        if board[position] != PLAYER_X && board[position] != PLAYER_O {
+            board[position] = player;
+            accepted = true;
+        }
+    }
+
+    if !accepted {
+        puts "invalid move\n";
+    } else {
+        moves += 1;
+        show_board();
+
+        if has_won(player) {
+            puts "player ";
+            put player;
+            puts " wins!\n";
+            break;
+        }
+
+        if player == PLAYER_X {
+            player = PLAYER_O;
+        } else {
+            player = PLAYER_X;
+        }
+    }
+}
+
+if moves == BOARD_SIZE && !has_won(player) {
+    puts "draw!\n";
+}
