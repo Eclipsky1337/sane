@@ -22,6 +22,12 @@ pub enum ReturnType {
     Byte,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatSpec {
+    Decimal,
+    Byte,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
@@ -67,6 +73,7 @@ pub enum Stmt {
     Print(Expr, Span),
     PrintFormat {
         parts: Vec<Vec<u8>>,
+        specs: Vec<FormatSpec>,
         args: Vec<Expr>,
         span: Span,
     },

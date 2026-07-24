@@ -1,5 +1,5 @@
 use crate::ast::{
-    ArrayInit, ArrayLen, BinOp, Expr, Function, Param, Program, ReturnType, Stmt, UnOp,
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Param, Program, ReturnType, Stmt, UnOp,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -340,13 +340,13 @@ impl Parser {
             let TokenKind::StringLit(bytes) = token.kind else {
                 unreachable!("formatted print is selected by token kind");
             };
-            let parts = parse_format_parts(&bytes, token.span)?;
+            let (parts, specs) = parse_format_parts(&bytes, token.span)?;
             let mut args = Vec::new();
             while self.match_kind(TokenKind::Comma) {
                 args.push(self.parse_expr()?);
             }
             let end = self.expect(TokenKind::Semi)?.span;
-            let placeholders = parts.len() - 1;
+            let placeholders = specs.len();
             if placeholders != args.len() {
                 return Err(Diagnostic::new(
                     format!(
@@ -358,6 +358,7 @@ impl Parser {
             }
             return Ok(Stmt::PrintFormat {
                 parts,
+                specs,
                 args,
                 span: start.join(end),
             });
@@ -838,8 +839,12 @@ fn stmt_span(stmt: &Stmt) -> Span {
     }
 }
 
-fn parse_format_parts(bytes: &[u8], span: Span) -> Result<Vec<Vec<u8>>, Diagnostic> {
+fn parse_format_parts(
+    bytes: &[u8],
+    span: Span,
+) -> Result<(Vec<Vec<u8>>, Vec<FormatSpec>), Diagnostic> {
     let mut parts = Vec::new();
+    let mut specs = Vec::new();
     let mut literal = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
@@ -854,11 +859,33 @@ fn parse_format_parts(bytes: &[u8], span: Span) -> Result<Vec<Vec<u8>>, Diagnost
             }
             b'{' if bytes.get(index + 1) == Some(&b'}') => {
                 parts.push(std::mem::take(&mut literal));
+                specs.push(FormatSpec::Decimal);
                 index += 2;
+            }
+            b'{' if bytes.get(index + 1) == Some(&b':') => {
+                let spec = match bytes.get(index + 2) {
+                    Some(b'd') => FormatSpec::Decimal,
+                    Some(b'c') => FormatSpec::Byte,
+                    _ => {
+                        return Err(Diagnostic::new(
+                            "unsupported format specifier; use `{}`, `{:d}`, or `{:c}`",
+                            span,
+                        ));
+                    }
+                };
+                if bytes.get(index + 3) != Some(&b'}') {
+                    return Err(Diagnostic::new(
+                        "invalid format placeholder; use `{}`, `{:d}`, or `{:c}`",
+                        span,
+                    ));
+                }
+                parts.push(std::mem::take(&mut literal));
+                specs.push(spec);
+                index += 4;
             }
             b'{' | b'}' => {
                 return Err(Diagnostic::new(
-                    "unmatched brace in format string; use `{{`, `}}`, or `{}`",
+                    "unmatched brace in format string; use `{{`, `}}`, `{}`, `{:d}`, or `{:c}`",
                     span,
                 ));
             }
@@ -869,5 +896,5 @@ fn parse_format_parts(bytes: &[u8], span: Span) -> Result<Vec<Vec<u8>>, Diagnost
         }
     }
     parts.push(literal);
-    Ok(parts)
+    Ok((parts, specs))
 }

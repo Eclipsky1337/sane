@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ast::{ArrayInit, ArrayLen, BinOp, Expr, Function, Program, ReturnType, Stmt, UnOp};
+use crate::ast::{
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Program, ReturnType, Stmt, UnOp,
+};
 use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
@@ -491,14 +493,20 @@ impl Resolver {
             Stmt::Put(expr, _) => Ok(ResolvedStmt::Put(self.resolve_expr(expr)?)),
             Stmt::Puts(bytes, _) => Ok(ResolvedStmt::Puts(bytes.clone())),
             Stmt::Print(expr, _) => Ok(ResolvedStmt::Print(self.resolve_expr(expr)?)),
-            Stmt::PrintFormat { parts, args, .. } => {
+            Stmt::PrintFormat {
+                parts, specs, args, ..
+            } => {
                 let mut stmts = Vec::new();
                 for (index, part) in parts.iter().enumerate() {
                     if !part.is_empty() {
                         stmts.push(ResolvedStmt::Puts(part.clone()));
                     }
                     if let Some(arg) = args.get(index) {
-                        stmts.push(ResolvedStmt::Print(self.resolve_expr(arg)?));
+                        let expr = self.resolve_expr(arg)?;
+                        match specs[index] {
+                            FormatSpec::Decimal => stmts.push(ResolvedStmt::Print(expr)),
+                            FormatSpec::Byte => stmts.push(ResolvedStmt::Put(expr)),
+                        }
                     }
                 }
                 Ok(ResolvedStmt::Block(stmts))
