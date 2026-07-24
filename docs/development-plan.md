@@ -1,4 +1,4 @@
-# Post-1.1 Development Plan
+# Post-1.2 Development Plan
 
 This document is the handoff context for the next Codex session. Work should
 continue on the dedicated `dev` branch. Do not develop directly on `main`.
@@ -11,21 +11,23 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] inferred array declarations
   - [x] compile-time constants
 - [x] Phase 1.5: compile-time formatted output
+- [x] Release 1.2: version, documentation, validation, and tag
 - [ ] Phase 2: P1 PC measurement and optimization
 - [ ] Phase 3: P3 item 13 debug symbols
 
-Phase 1 passed `cargo fmt -- --check`, `cargo test --locked`,
-`git diff --check`, and the documented AES and Collatz example checks.
+Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
+`cargo build --locked --release`, `git diff --check`, and the documented AES
+and Collatz example checks.
 
 ## Repository State
 
 - Project: Sane
 - Compiler: `sanec`
 - Interpreter/debugger: `sanei`
-- Current release: `v1.1.0`
+- Current release: `v1.2.0`
 - Current development branch: `dev`
-- `main` and `v1.1.0` point to `584f1dc`; `dev` contains post-1.1 work
-- Package version: `1.1.0`
+- `main` and `v1.2.0` contain the completed Phase 1 language work
+- Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
 - The full test suite currently contains 109 tests
 
@@ -39,8 +41,8 @@ cargo fmt -- --check
 cargo test --locked
 ```
 
-Do not rewrite or delete `v1.1.0`. Keep `dev` rebased on `main` and avoid merge
-commits when updating the development branch.
+Do not rewrite or delete published release tags. Keep `dev` rebased on `main`
+and avoid merge commits when updating the development branch.
 
 ## Current Language
 
@@ -125,8 +127,8 @@ Backend behavior:
 
 ## Measured PC Backend State
 
-The following measurements were taken from the current 1.1 implementation.
-They are reference values, not exact assertions for future tests.
+The following measurements were taken before the 1.2 optimization phase. They
+are reference values, not exact assertions for future tests.
 
 Representative inputs:
 
@@ -451,4 +453,4 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 1 item 1: automatic backend selection.
+The next session should begin with Phase 2 item 5: IR statistics.
