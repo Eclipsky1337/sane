@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0
+
+- Made backend selection automatic: function-free programs use the structured
+  backend, while programs containing functions use the PC backend.
+- Added void functions, `return;`, standalone call statements, and discarded
+  results from byte-returning calls.
+- Added inferred byte-array declarations from list and string initializers.
+- Added lexically scoped compile-time byte constants and constant array
+  lengths. `const` is now a reserved keyword.
+- Added compile-time checked formatted `print` output with decimal `{}`
+  placeholders and escaped braces.
+- Updated the AES and Collatz examples for the new syntax and removed the
+  obsolete Luhn example.
+
 ## 1.1.0
 
 - Added the experimental `pc` backend with basic-block IR.
