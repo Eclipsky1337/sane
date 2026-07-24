@@ -35,6 +35,22 @@ fn print_and_println_decimal_bytes() {
 }
 
 #[test]
+fn formatted_print_combines_literals_and_decimal_expressions() {
+    let src = r#"
+        let round = 3;
+        let value = 42;
+        print "round: {} value: {}\n", round, value;
+        print "result: {{{}}}\n", value + 1;
+        print "done\n";
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(
+        run_bf(&bf, &[]),
+        b"round: 3 value: 42\nresult: {43}\ndone\n"
+    );
+}
+
+#[test]
 fn put_expression() {
     let src = "let x: byte = 60; put x + 5;";
     let bf = compile_source(src).unwrap();

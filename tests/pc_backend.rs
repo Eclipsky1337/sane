@@ -220,6 +220,20 @@ println f(1) + g(2);
 }
 
 #[test]
+fn formatted_print_streams_parts_and_arguments_left_to_right() {
+    let src = "\
+fn trace(value: byte) -> byte {
+  put 'X';
+  return value;
+}
+
+print \"A{}B{}\\n\", trace(1), trace(2);
+";
+    let bf = compile_pc(src);
+    assert_eq!(run_bf(&bf, &[]), b"AX1BX2\n");
+}
+
+#[test]
 fn function_frames_do_not_reuse_caller_scope_cells() {
     let src = "\
 fn next(n: byte) -> byte {

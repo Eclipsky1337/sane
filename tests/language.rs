@@ -166,6 +166,37 @@ fn diagnostics_include_source_location_and_caret() {
 }
 
 #[test]
+fn formatted_print_errors_are_reported() {
+    let cases = [
+        (
+            "print \"{} {}\", 1;",
+            "format string has 2 placeholders, but 1 arguments were provided",
+        ),
+        (
+            "print \"{}\", 1, 2;",
+            "format string has 1 placeholders, but 2 arguments were provided",
+        ),
+        ("print \"value: {\", 1;", "unmatched brace in format string"),
+        (
+            "fn show() {} print \"{}\", show();",
+            "void function `show` cannot be used as a value",
+        ),
+    ];
+
+    for (src, expected) in cases {
+        let tokens = lexer::lex(src).unwrap();
+        let mut parser = parser::Parser::new(tokens);
+        match parser.parse_program() {
+            Ok(program) => {
+                let error = sema::resolve(&program).unwrap_err();
+                assert!(error.message.contains(expected), "{error:?}");
+            }
+            Err(error) => assert!(error.message.contains(expected), "{error:?}"),
+        }
+    }
+}
+
+#[test]
 fn syntax_surface_smoke_test() {
     let src = "
         let x: byte;
