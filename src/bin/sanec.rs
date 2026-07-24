@@ -29,7 +29,7 @@ fn run() -> Result<(), String> {
     let mut input = None;
     let mut output = None;
     let mut annotate_symbols = false;
-    let mut backend = Backend::Structured;
+    let mut backend = Backend::Auto;
 
     while let Some(arg) = args.first().cloned() {
         args.remove(0);
@@ -87,6 +87,7 @@ fn run() -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy)]
 enum Backend {
+    Auto,
     Structured,
     Pc,
 }
@@ -94,27 +95,28 @@ enum Backend {
 impl Backend {
     fn parse(name: &str) -> Result<Self, String> {
         match name {
+            "auto" => Ok(Self::Auto),
             "structured" => Ok(Self::Structured),
             "pc" => Ok(Self::Pc),
             _ => Err(format!(
-                "unknown backend `{name}`; expected `structured` or `pc`"
+                "unknown backend `{name}`; expected `auto`, `structured`, or `pc`"
             )),
         }
     }
 }
 
 fn compile_source(src: &str, path: &str, backend: Backend) -> Result<String, String> {
+    let tokens = sane::lexer::lex(src).map_err(|err| err.render(path, src))?;
+    let mut parser = sane::parser::Parser::new(tokens);
+    let program = parser
+        .parse_program()
+        .map_err(|err| err.render(path, src))?;
+    let program = sane::sema::resolve(&program).map_err(|err| err.render(path, src))?;
+
     match backend {
-        Backend::Structured => sane::compile_source_with_path(src, path),
-        Backend::Pc => {
-            let tokens = sane::lexer::lex(src).map_err(|err| err.render(path, src))?;
-            let mut parser = sane::parser::Parser::new(tokens);
-            let program = parser
-                .parse_program()
-                .map_err(|err| err.render(path, src))?;
-            let program = sane::sema::resolve(&program).map_err(|err| err.render(path, src))?;
-            sane::bf::compile_pc(&program)
-        }
+        Backend::Auto if program.functions.is_empty() => sane::bf::compile(&program),
+        Backend::Auto | Backend::Pc => sane::bf::compile_pc(&program),
+        Backend::Structured => sane::bf::compile(&program),
     }
 }
 
@@ -164,7 +166,7 @@ Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
-  -b <backend>    Select backend: structured or pc
+  -b <backend>    Select backend: auto, structured, or pc (default: auto)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 "

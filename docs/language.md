@@ -221,7 +221,9 @@ return add(x, add(5, 6));
 ```
 
 Functions are currently supported only by the PC backend. Compile a function
-program with `sanec -b pc`.
+program with `sanec`; the compiler automatically selects the PC backend when
+functions are present. Use `sanec -b structured` only when intentionally
+checking structured-backend compatibility.
 
 Each function has a statically allocated frame for its parameters and local
 variables. Nested calls are supported, but recursive call graphs are rejected.

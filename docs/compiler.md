@@ -11,7 +11,7 @@ Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
-  -b <backend>    Select backend: structured or pc
+  -b <backend>    Select backend: auto, structured, or pc (default: auto)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 ```
@@ -39,8 +39,11 @@ sanec program.sn -o program.bf
 
 ## Backends
 
-The default `structured` backend lowers control flow directly to Brainfuck
-loops and guard cells. It produces smaller and faster programs for language
+The default `auto` mode selects the structured backend for programs without
+functions and the PC backend for programs containing functions.
+
+The `structured` backend lowers control flow directly to Brainfuck loops and
+guard cells. It generally produces smaller and faster programs for language
 features that do not require functions:
 
 ```sh
@@ -54,8 +57,9 @@ Brainfuck dispatcher loop. It supports byte functions, calls, and returns:
 sanec -b pc examples/Collatz.sn -o collatz.bf
 ```
 
-Programs containing functions must select `-b pc`. Both backends accept the
-same non-function syntax.
+Use `-b structured` or `-b pc` to force a backend. Forcing the structured
+backend for a program containing functions reports an actionable error. Both
+backends accept the same non-function syntax.
 
 ## Symbol Annotations
 
@@ -105,5 +109,5 @@ status.
 ```sh
 sanec examples/luhn4.sn -o luhn4.bf
 sanec examples/toy_aes_round.sn -o toy.bf -s
-sanec -b pc examples/Collatz.sn -o collatz.bf
+sanec examples/Collatz.sn -o collatz.bf
 ```

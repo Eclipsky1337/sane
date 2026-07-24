@@ -6,8 +6,8 @@ Sane is a small programming language that compiles to 8-bit Brainfuck.
 - `sanei` runs and debugs Brainfuck programs.
 
 Sane 1.1 adds byte functions and a basic-block IR through the experimental
-`pc` backend. The structured backend remains the default for programs that do
-not use functions.
+`pc` backend. The compiler automatically uses the structured backend for
+programs without functions and the PC backend for programs with functions.
 
 ## Quick Start
 
@@ -28,7 +28,7 @@ toy-aes:ED958E73EFAD3E04336822CC237B065A ok
 Compile a function program with the PC backend:
 
 ```sh
-sanec -b pc examples/Collatz.sn -o collatz.bf
+sanec examples/Collatz.sn -o collatz.bf
 printf "7\n" | sanei collatz.bf
 ```
 
