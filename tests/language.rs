@@ -100,6 +100,23 @@ fn function_declaration_errors_are_reported() {
             "fn f(a: byte) -> byte { return a; } put f(1, 2);",
             "function `f` expects 1 arguments, got 2",
         ),
+        (
+            "fn f() { return 1; } f();",
+            "void function cannot return a value",
+        ),
+        (
+            "fn f() -> byte { return; } f();",
+            "byte function must return a value",
+        ),
+        (
+            "fn f() -> byte { if true { return 1; } } put f();",
+            "byte function `f` may fall through without returning a value",
+        ),
+        (
+            "fn f() {} let value = f();",
+            "void function `f` cannot be used as a value",
+        ),
+        ("return;", "`return` outside function"),
     ];
 
     for (src, expected) in cases {

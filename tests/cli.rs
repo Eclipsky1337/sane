@@ -91,6 +91,16 @@ fn sanec_automatically_selects_pc_for_functions() {
 }
 
 #[test]
+fn sanec_automatically_selects_pc_for_void_functions() {
+    let output = run_sanec(&[], "fn show() { puts \"ok\\n\"; } show();");
+    assert!(output.status.success());
+    assert_eq!(
+        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
+        b"ok\n"
+    );
+}
+
+#[test]
 fn sanec_can_explicitly_select_auto_backend() {
     let output = run_sanec(&["-b", "auto"], "put 'A';");
     assert!(output.status.success());

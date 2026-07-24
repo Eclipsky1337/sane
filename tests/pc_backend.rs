@@ -107,6 +107,60 @@ println x;
 }
 
 #[test]
+fn pc_backend_runs_void_functions_and_call_statements() {
+    let src = "\
+fn show(value: byte) {
+  print value;
+  return;
+}
+
+fn show_answer() {
+  show(42);
+}
+
+show_answer();
+puts \" ok\\n\";
+";
+    let bf = compile_pc(src);
+    assert_eq!(run_bf(&bf, &[]), b"42 ok\n");
+}
+
+#[test]
+fn void_functions_fall_through_and_byte_results_can_be_discarded() {
+    let src = "\
+fn trace(value: byte) -> byte {
+  put value;
+  return value;
+}
+
+fn run() {
+  trace('A');
+}
+
+run();
+";
+    let bf = compile_pc(src);
+    assert_eq!(run_bf(&bf, &[]), b"A");
+}
+
+#[test]
+fn call_statement_arguments_support_nested_byte_calls() {
+    let src = "\
+fn inc(value: byte) -> byte {
+  return value + 1;
+}
+
+fn show(value: byte) {
+  println value;
+}
+
+show(inc(41));
+";
+    let bf = compile_pc(src);
+    assert_eq!(run_bf(&bf, &[]), b"42\n");
+}
+
+#[test]
 fn pc_backend_runs_nested_function_calls() {
     let src = "\
 fn inc(x: byte) -> byte {
