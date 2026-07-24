@@ -12,25 +12,11 @@ const PLAYER_O = 'O';
 let board = "123456789";
 
 fn show_board() {
-    puts "\n";
-    put board[0];
-    puts " | ";
-    put board[1];
-    puts " | ";
-    put board[2];
-    puts "\n--+---+--\n";
-    put board[3];
-    puts " | ";
-    put board[4];
-    puts " | ";
-    put board[5];
-    puts "\n--+---+--\n";
-    put board[6];
-    puts " | ";
-    put board[7];
-    puts " | ";
-    put board[8];
-    puts "\n\n";
+    print "\n{:c} | {:c} | {:c}\n", board[0], board[1], board[2];
+    print "--+---+--\n";
+    print "{:c} | {:c} | {:c}\n", board[3], board[4], board[5];
+    print "--+---+--\n";
+    print "{:c} | {:c} | {:c}\n\n", board[6], board[7], board[8];
 }
 
 fn has_line(mark: byte, first: byte, second: byte, third: byte) -> byte {
@@ -48,7 +34,7 @@ fn has_won(mark: byte) -> byte {
         || has_line(mark, 2, 4, 6);
 }
 
-puts "Sane tic-tac-toe\n";
+print "Sane tic-tac-toe\n";
 show_board();
 
 let player = PLAYER_X;
@@ -59,9 +45,7 @@ let position = 0;
 let accepted = false;
 
 while moves < BOARD_SIZE {
-    puts "player ";
-    put player;
-    puts ", choose 1-9: ";
+    print "player {:c}, choose 1-9: ", player;
     read input;
     read newline;
 
@@ -75,15 +59,13 @@ while moves < BOARD_SIZE {
     }
 
     if !accepted {
-        puts "invalid move\n";
+        print "invalid move\n";
     } else {
         moves += 1;
         show_board();
 
         if has_won(player) {
-            puts "player ";
-            put player;
-            puts " wins!\n";
+            print "player {:c} wins!\n", player;
             break;
         }
 
@@ -96,5 +78,5 @@ while moves < BOARD_SIZE {
 }
 
 if moves == BOARD_SIZE && !has_won(player) {
-    puts "draw!\n";
+    print "draw!\n";
 }
