@@ -1,6 +1,6 @@
 # Language Reference
 
-Sane 1.0 is a byte-oriented language. A `byte` is an unsigned 8-bit value
+Sane 1.2 is a byte-oriented language. A `byte` is an unsigned 8-bit value
 stored in one Brainfuck cell. Arithmetic wraps modulo 256. Zero is false and
 every non-zero value is true.
 
@@ -22,6 +22,15 @@ Line comments start with `//`:
 // This line is ignored.
 let x = 65;
 ```
+
+## Reserved Keywords
+
+The reserved keywords are `let`, `const`, `fn`, `return`, `if`, `else`,
+`while`, `loop`, `for`, `break`, `continue`, `byte`, `put`, `puts`, `print`,
+`println`, `read`, `true`, and `false`. They cannot be used as identifiers.
+
+`const` became a reserved keyword in Sane 1.2; older source that used it as an
+identifier must rename that identifier.
 
 ## Variables And Scope
 
@@ -106,7 +115,7 @@ put data[i];
 ```
 
 Constant indexes are checked at compile time. Dynamic indexes are not bounds
-checked in Sane 1.0.
+checked.
 
 ## Literals
 
