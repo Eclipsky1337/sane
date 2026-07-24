@@ -11,8 +11,15 @@ pub struct Function {
     pub name: String,
     pub name_span: Span,
     pub params: Vec<Param>,
+    pub return_type: ReturnType,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnType {
+    Void,
+    Byte,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +67,13 @@ pub enum Stmt {
         index: Expr,
         span: Span,
     },
-    Return(Expr, Span),
+    Call {
+        name: String,
+        name_span: Span,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    Return(Option<Expr>, Span),
     Break(Span),
     Continue(Span),
     Block(Vec<Stmt>, Span),

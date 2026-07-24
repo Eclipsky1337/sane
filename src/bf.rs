@@ -361,8 +361,10 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
         }
         Stmt::Read(cell) => out.read(*cell),
         Stmt::ReadArray { base, len, index } => emit_array_read(*base, *len, index, out)?,
-        Stmt::Return(_) => {
-            return Err("internal error: return reached structured backend".to_string());
+        Stmt::Call { .. } | Stmt::Return(_) => {
+            return Err(
+                "internal error: function statement reached structured backend".to_string(),
+            );
         }
         Stmt::Break => {
             let ctx = loop_ctx.ok_or_else(|| "internal error: break outside loop".to_string())?;

@@ -1,3 +1,4 @@
+use crate::ast::ReturnType;
 use crate::sema::{ResolvedExpr, ResolvedProgram, ResolvedStmt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +89,11 @@ pub fn lower(program: &ResolvedProgram) -> Program {
         .zip(function_entries.iter().copied())
     {
         let end = builder.lower_stmts(&function.body, entry, &mut Vec::new());
-        builder.set_terminator_if_open(end, Terminator::Return(ResolvedExpr::Byte(0)));
+        let terminator = match function.return_type {
+            ReturnType::Void => Terminator::ReturnValue,
+            ReturnType::Byte => Terminator::Return(ResolvedExpr::Byte(0)),
+        };
+        builder.set_terminator_if_open(end, terminator);
     }
 
     Program {
@@ -227,9 +232,32 @@ impl Builder {
                 );
                 current
             }
+            ResolvedStmt::Call { function, args } => {
+                let mut current = current;
+                let mut lowered_args = Vec::new();
+                for arg in args {
+                    let (next, arg) = self.lower_expr_calls(current, arg);
+                    current = next;
+                    lowered_args.push(arg);
+                }
+                let after = self.new_block();
+                self.set_terminator_if_open(
+                    current,
+                    Terminator::Call {
+                        function: *function,
+                        args: lowered_args,
+                        return_target: after,
+                    },
+                );
+                after
+            }
             ResolvedStmt::Return(expr) => {
-                let (current, expr) = self.lower_expr_calls(current, expr);
-                self.set_terminator_if_open(current, Terminator::Return(expr));
+                if let Some(expr) = expr {
+                    let (current, expr) = self.lower_expr_calls(current, expr);
+                    self.set_terminator_if_open(current, Terminator::Return(expr));
+                } else {
+                    self.set_terminator_if_open(current, Terminator::ReturnValue);
+                }
                 self.new_block()
             }
             ResolvedStmt::Break => {

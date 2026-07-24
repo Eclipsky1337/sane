@@ -1,4 +1,4 @@
-use crate::ast::{ArrayInit, BinOp, Expr, Function, Param, Program, Stmt, UnOp};
+use crate::ast::{ArrayInit, BinOp, Expr, Function, Param, Program, ReturnType, Stmt, UnOp};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -46,13 +46,18 @@ impl Parser {
                 break;
             }
         }
-        self.expect(TokenKind::Arrow)?;
-        self.expect(TokenKind::ByteTy)?;
+        let return_type = if self.match_kind(TokenKind::Arrow) {
+            self.expect(TokenKind::ByteTy)?;
+            ReturnType::Byte
+        } else {
+            ReturnType::Void
+        };
         let (body, end) = self.parse_block_with_span()?;
         Ok(Function {
             name,
             name_span,
             params,
+            return_type,
             body,
             span: start.join(end),
         })
@@ -77,6 +82,7 @@ impl Parser {
             TokenKind::While => self.parse_while(),
             TokenKind::Loop => self.parse_loop(),
             TokenKind::For => self.parse_for(),
+            TokenKind::Ident(_) if self.at_next(TokenKind::LParen) => self.parse_call_stmt(),
             TokenKind::Ident(_) => self.parse_assign(),
             kind => Err(self.error_here(format!("expected statement, found {kind:?}"))),
         }
@@ -332,9 +338,33 @@ impl Parser {
 
     fn parse_return(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::Return)?.span;
-        let expr = self.parse_expr()?;
+        let expr = if self.at(TokenKind::Semi) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
         let end = self.expect(TokenKind::Semi)?.span;
         Ok(Stmt::Return(expr, start.join(end)))
+    }
+
+    fn parse_call_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let expr = self.parse_primary()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        let Expr::Call {
+            name,
+            name_span,
+            args,
+            span,
+        } = expr
+        else {
+            unreachable!("call statements are selected by lookahead");
+        };
+        Ok(Stmt::Call {
+            name,
+            name_span,
+            args,
+            span: span.join(end),
+        })
     }
 
     fn parse_break(&mut self) -> Result<Stmt, Diagnostic> {
@@ -695,6 +725,12 @@ impl Parser {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(&kind)
     }
 
+    fn at_next(&self, kind: TokenKind) -> bool {
+        self.tokens.get(self.current + 1).is_some_and(|token| {
+            std::mem::discriminant(&token.kind) == std::mem::discriminant(&kind)
+        })
+    }
+
     fn peek(&self) -> &TokenKind {
         &self.tokens[self.current].kind
     }
@@ -734,6 +770,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Println(_, span)
         | Stmt::Read(_, span)
         | Stmt::ReadArray { span, .. }
+        | Stmt::Call { span, .. }
         | Stmt::Return(_, span)
         | Stmt::Break(span)
         | Stmt::Continue(span)

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{ArrayInit, BinOp, Expr, Function, Program, Stmt, UnOp};
+use crate::ast::{ArrayInit, BinOp, Expr, Function, Program, ReturnType, Stmt, UnOp};
 use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
@@ -57,6 +57,7 @@ pub struct ResolvedProgram {
 pub struct ResolvedFunction {
     pub name: String,
     pub params: Vec<usize>,
+    pub return_type: ReturnType,
     pub body: Vec<ResolvedStmt>,
 }
 
@@ -91,7 +92,11 @@ pub enum ResolvedStmt {
         len: usize,
         index: ResolvedExpr,
     },
-    Return(ResolvedExpr),
+    Call {
+        function: usize,
+        args: Vec<ResolvedExpr>,
+    },
+    Return(Option<ResolvedExpr>),
     Break,
     Continue,
     Block(Vec<ResolvedStmt>),
@@ -189,6 +194,7 @@ struct Resolver {
     functions: HashMap<String, usize>,
     function_names: Vec<String>,
     function_arities: Vec<usize>,
+    function_return_types: Vec<ReturnType>,
     call_graph: Vec<Vec<usize>>,
     current_function: Option<usize>,
     free_cells: Vec<usize>,
@@ -205,6 +211,7 @@ impl Resolver {
             functions: HashMap::new(),
             function_names: Vec::new(),
             function_arities: Vec::new(),
+            function_return_types: Vec::new(),
             call_graph: Vec::new(),
             current_function: None,
             free_cells: Vec::new(),
@@ -225,6 +232,7 @@ impl Resolver {
             self.functions.insert(function.name.clone(), index);
             self.function_names.push(function.name.clone());
             self.function_arities.push(function.params.len());
+            self.function_return_types.push(function.return_type);
             self.call_graph.push(Vec::new());
         }
         Ok(())
@@ -256,9 +264,19 @@ impl Resolver {
             let body = self.resolve_stmts(&function.body, 0)?;
             self.current_function = previous;
             self.pop_scope_retain();
+            if function.return_type == ReturnType::Byte && !stmts_always_return(&body) {
+                return Err(Diagnostic::new(
+                    format!(
+                        "byte function `{}` may fall through without returning a value",
+                        function.name
+                    ),
+                    function.span,
+                ));
+            }
             resolved.push(ResolvedFunction {
                 name: function.name.clone(),
                 params,
+                return_type: function.return_type,
                 body,
             });
         }
@@ -468,11 +486,32 @@ impl Resolver {
                     index: self.resolve_expr(index)?,
                 })
             }
+            Stmt::Call {
+                name,
+                name_span,
+                args,
+                ..
+            } => {
+                let (function, args) = self.resolve_call(name, *name_span, args)?;
+                Ok(ResolvedStmt::Call { function, args })
+            }
             Stmt::Return(expr, span) => {
-                if self.current_function.is_none() {
+                let Some(function) = self.current_function else {
                     return Err(Diagnostic::new("`return` outside function", *span));
+                };
+                match (self.function_return_types[function], expr) {
+                    (ReturnType::Void, None) => Ok(ResolvedStmt::Return(None)),
+                    (ReturnType::Void, Some(_)) => Err(Diagnostic::new(
+                        "void function cannot return a value",
+                        *span,
+                    )),
+                    (ReturnType::Byte, None) => {
+                        Err(Diagnostic::new("byte function must return a value", *span))
+                    }
+                    (ReturnType::Byte, Some(expr)) => {
+                        Ok(ResolvedStmt::Return(Some(self.resolve_expr(expr)?)))
+                    }
                 }
-                Ok(ResolvedStmt::Return(self.resolve_expr(expr)?))
             }
             Stmt::Break(span) => {
                 if loop_depth == 0 {
@@ -583,28 +622,13 @@ impl Resolver {
                 args,
                 ..
             } => {
-                let function = self.functions.get(name).copied().ok_or_else(|| {
-                    Diagnostic::new(format!("call to undeclared function `{name}`"), *name_span)
-                })?;
-                if args.len() != self.function_arities[function] {
+                let (function, args) = self.resolve_call(name, *name_span, args)?;
+                if self.function_return_types[function] == ReturnType::Void {
                     return Err(Diagnostic::new(
-                        format!(
-                            "function `{name}` expects {} arguments, got {}",
-                            self.function_arities[function],
-                            args.len()
-                        ),
+                        format!("void function `{name}` cannot be used as a value"),
                         *name_span,
                     ));
                 }
-                if let Some(caller) = self.current_function {
-                    if !self.call_graph[caller].contains(&function) {
-                        self.call_graph[caller].push(function);
-                    }
-                }
-                let args = args
-                    .iter()
-                    .map(|arg| self.resolve_expr(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(ResolvedExpr::Call { function, args })
             }
             Expr::Unary { op, expr, .. } => Ok(ResolvedExpr::Unary {
@@ -619,6 +643,37 @@ impl Resolver {
                 right: Box::new(self.resolve_expr(right)?),
             }),
         }
+    }
+
+    fn resolve_call(
+        &mut self,
+        name: &str,
+        name_span: Span,
+        args: &[Expr],
+    ) -> Result<(usize, Vec<ResolvedExpr>), Diagnostic> {
+        let function = self.functions.get(name).copied().ok_or_else(|| {
+            Diagnostic::new(format!("call to undeclared function `{name}`"), name_span)
+        })?;
+        if args.len() != self.function_arities[function] {
+            return Err(Diagnostic::new(
+                format!(
+                    "function `{name}` expects {} arguments, got {}",
+                    self.function_arities[function],
+                    args.len()
+                ),
+                name_span,
+            ));
+        }
+        if let Some(caller) = self.current_function {
+            if !self.call_graph[caller].contains(&function) {
+                self.call_graph[caller].push(function);
+            }
+        }
+        let args = args
+            .iter()
+            .map(|arg| self.resolve_expr(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((function, args))
     }
 
     fn lookup_symbol(&self, name: &str, span: Span, prefix: &str) -> Result<Symbol, Diagnostic> {
@@ -845,8 +900,9 @@ fn count_stmt_call(stmt: &ResolvedStmt) -> usize {
         ResolvedStmt::Assign { expr, .. }
         | ResolvedStmt::Put(expr)
         | ResolvedStmt::Print(expr)
-        | ResolvedStmt::Println(expr)
-        | ResolvedStmt::Return(expr) => count_expr_calls(expr),
+        | ResolvedStmt::Println(expr) => count_expr_calls(expr),
+        ResolvedStmt::Call { args, .. } => args.iter().map(count_expr_calls).sum(),
+        ResolvedStmt::Return(expr) => expr.as_ref().map_or(0, count_expr_calls),
         ResolvedStmt::ArraySet { index, expr, .. } => {
             count_expr_calls(index) + count_expr_calls(expr)
         }
@@ -882,5 +938,26 @@ fn count_expr_calls(expr: &ResolvedExpr) -> usize {
         ResolvedExpr::Binary { left, right, .. } => {
             count_expr_calls(left) + count_expr_calls(right)
         }
+    }
+}
+
+fn stmts_always_return(stmts: &[ResolvedStmt]) -> bool {
+    stmts.iter().any(stmt_always_returns)
+}
+
+fn stmt_always_returns(stmt: &ResolvedStmt) -> bool {
+    match stmt {
+        ResolvedStmt::Return(Some(_)) => true,
+        ResolvedStmt::Block(stmts) => stmts_always_return(stmts),
+        ResolvedStmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            !else_branch.is_empty()
+                && stmts_always_return(then_branch)
+                && stmts_always_return(else_branch)
+        }
+        _ => false,
     }
 }
