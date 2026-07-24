@@ -227,10 +227,10 @@ fn trace(value: byte) -> byte {
   return value;
 }
 
-print \"A{}B{}\\n\", trace(1), trace(2);
+print \"A{:c}B{:d}C{}\\n\", trace('Q'), trace(2), trace(3);
 ";
     let bf = compile_pc(src);
-    assert_eq!(run_bf(&bf, &[]), b"AX1BX2\n");
+    assert_eq!(run_bf(&bf, &[]), b"AXQBX2CX3\n");
 }
 
 #[test]

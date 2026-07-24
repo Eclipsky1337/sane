@@ -177,6 +177,8 @@ fn formatted_print_errors_are_reported() {
             "format string has 1 placeholders, but 2 arguments were provided",
         ),
         ("print \"value: {\", 1;", "unmatched brace in format string"),
+        ("print \"{:x}\", 1;", "unsupported format specifier"),
+        ("print \"{:dd}\", 1;", "invalid format placeholder"),
         (
             "fn show() {} print \"{}\", show();",
             "void function `show` cannot be used as a value",

@@ -51,6 +51,16 @@ fn formatted_print_combines_literals_and_decimal_expressions() {
 }
 
 #[test]
+fn formatted_print_supports_byte_and_explicit_decimal_output() {
+    let src = r#"
+        print "{:c}:{:d}:{}\n", 'A', 42, 7;
+        print "{{{:c}}}\n", 'Z';
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"A:42:7\n{Z}\n");
+}
+
+#[test]
 fn put_expression() {
     let src = "let x: byte = 60; put x + 5;";
     let bf = compile_source(src).unwrap();
