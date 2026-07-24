@@ -57,14 +57,19 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            package: sane-linux-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            package: sane-linux-aarch64
           - os: windows-2025
             target: x86_64-pc-windows-msvc
+            package: sane-windows-x86_64
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            package: sane-macos-x86_64
           - os: macos-15
             target: aarch64-apple-darwin
+            package: sane-macos-aarch64
     steps:
       - name: Check out release tag
         uses: actions/checkout@v7
@@ -83,11 +88,11 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          package="sane-${RELEASE_TAG}-${{ matrix.target }}"
+          package="${{ matrix.package }}"
           mkdir -p "dist/$package"
           cp "target/${{ matrix.target }}/release/sanec" "dist/$package/"
           cp "target/${{ matrix.target }}/release/sanei" "dist/$package/"
-          cp README.md LICENSE "dist/$package/"
+          cp LICENSE "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
           rm -rf "dist/$package"
 
@@ -95,11 +100,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $package = "sane-$env:RELEASE_TAG-${{ matrix.target }}"
+          $package = "${{ matrix.package }}"
           New-Item -ItemType Directory -Path "dist/$package" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/sanec.exe" "dist/$package/"
           Copy-Item "target/${{ matrix.target }}/release/sanei.exe" "dist/$package/"
-          Copy-Item -Path README.md, LICENSE -Destination "dist/$package/"
+          Copy-Item LICENSE "dist/$package/"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
           Remove-Item -Recurse "dist/$package"
 
@@ -127,12 +132,6 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-
-      - name: Generate checksums
-        shell: bash
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS
 
       - name: Create or update GitHub release
         shell: bash
