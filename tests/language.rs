@@ -340,6 +340,38 @@ fn inferred_let_and_bool_literals() {
 }
 
 #[test]
+fn inferred_array_declarations_use_initializer_lengths() {
+    let src = r#"
+        let values = [64, 1 + 1, 'C'];
+        let message = "A\n";
+        put values[0] + values[1] - 1;
+        put values[2];
+        put message[0];
+        put message[1];
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ACA\n");
+}
+
+#[test]
+fn inferred_empty_array_requires_an_element_type() {
+    let err = compile_source("let values = [];").unwrap_err();
+    assert!(
+        err.contains("cannot infer the element type of an empty array"),
+        "{err}"
+    );
+}
+
+#[test]
+fn inferred_array_initializers_remain_constant() {
+    let err = compile_source("let value = 1; let values = [value];").unwrap_err();
+    assert!(
+        err.contains("array initializer elements must be constant bytes"),
+        "{err}"
+    );
+}
+
+#[test]
 fn array_constant_index_get_set() {
     let src = "
         let a: byte[4];

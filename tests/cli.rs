@@ -162,6 +162,16 @@ fn sanec_can_annotate_symbols_in_brainfuck_output() {
 }
 
 #[test]
+fn sanec_can_annotate_empty_inferred_string_arrays() {
+    let output = run_sanec(&["-s"], "let empty = \"\"; puts \"ok\";");
+    assert!(output.status.success());
+
+    let bf = String::from_utf8(output.stdout).unwrap();
+    assert!(bf.contains("empty ARRAY BASE 8 LEN 0 DATA CELLS 12 TO 11\n"));
+    assert_eq!(run_bf(&bf, &[]), b"ok");
+}
+
+#[test]
 fn sanei_debugger_supports_stepping_breakpoints_and_tape_inspection() {
     let stdout = run_debugger(
         "debug",
