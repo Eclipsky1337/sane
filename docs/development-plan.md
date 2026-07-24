@@ -3,6 +3,19 @@
 This document is the handoff context for the next Codex session. Work should
 continue on the dedicated `dev` branch. Do not develop directly on `main`.
 
+## Progress
+
+- [x] Phase 1: P2 language usability
+  - [x] automatic backend selection
+  - [x] void functions and call statements
+  - [x] inferred array declarations
+  - [x] compile-time constants
+- [ ] Phase 2: P1 PC measurement and optimization
+- [ ] Phase 3: P3 item 13 debug symbols
+
+Phase 1 passed `cargo fmt -- --check`, `cargo test --locked`,
+`git diff --check`, and the documented AES and Collatz example checks.
+
 ## Repository State
 
 - Project: Sane
@@ -10,10 +23,10 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - Interpreter/debugger: `sanei`
 - Current release: `v1.1.0`
 - Current development branch: `dev`
-- `main`, `dev`, and `v1.1.0` currently point to `584f1dc`
+- `main` and `v1.1.0` point to `584f1dc`; `dev` contains post-1.1 work
 - Package version: `1.1.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 89 tests
+- The full test suite currently contains 106 tests
 
 Before starting work:
 
@@ -37,11 +50,13 @@ Implemented language features:
 - wrapping `byte` values
 - lexical scalar variables
 - fixed-size byte arrays
-- list and ASCII string array initializers
+- explicit and inferred list/ASCII string array initializers
+- lexically scoped compile-time byte constants
 - arithmetic, comparisons, logical operators, bitwise operators, and shifts
 - `if`, `while`, `loop`, `for`, `break`, and `continue`
 - byte and decimal input/output statements
-- byte functions, parameters, return values, and expression calls
+- byte and void functions, parameters, returns, expression calls, and call
+  statements
 
 Current function syntax:
 
@@ -55,15 +70,15 @@ let result = add(20, 22);
 
 Current important limits:
 
-- functions require `sanec -b pc`
-- every function returns a byte
-- calls cannot be standalone statements
+- automatic backend selection uses PC for programs containing functions
+- forcing `sanec -b structured` rejects functions
+- function parameters and value-returning functions are byte-only
 - recursive call graphs are rejected
 - each function uses one statically allocated frame
 - maximum static call depth is 16
 - the PC backend supports at most 256 basic blocks
 - dynamic array indexes are not bounds checked
-- arrays and function values are byte-only
+- array elements are byte-only
 - there are no modules, pointers, or wider integer types
 
 ## Compiler Architecture
