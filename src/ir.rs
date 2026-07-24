@@ -152,6 +152,7 @@ impl Builder {
         loops: &mut Vec<LoopTargets>,
     ) -> BlockId {
         match stmt {
+            ResolvedStmt::Const => current,
             ResolvedStmt::Let { cell, init } => {
                 let (current, init) = if let Some(init) = init {
                     let (current, init) = self.lower_expr_calls(current, init);

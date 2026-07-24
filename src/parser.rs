@@ -1,4 +1,6 @@
-use crate::ast::{ArrayInit, BinOp, Expr, Function, Param, Program, ReturnType, Stmt, UnOp};
+use crate::ast::{
+    ArrayInit, ArrayLen, BinOp, Expr, Function, Param, Program, ReturnType, Stmt, UnOp,
+};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -65,6 +67,7 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match self.peek() {
+            TokenKind::Const => self.parse_const(),
             TokenKind::Let => self.parse_let(),
             TokenKind::Put => self.parse_put(),
             TokenKind::Puts => self.parse_puts(),
@@ -92,6 +95,20 @@ impl Parser {
         self.parse_let_with_semi(true)
     }
 
+    fn parse_const(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.expect(TokenKind::Const)?.span;
+        let (name, name_span) = self.expect_ident()?;
+        self.expect(TokenKind::Eq)?;
+        let expr = self.parse_expr()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(Stmt::Const {
+            name,
+            name_span,
+            expr,
+            span: start.join(end),
+        })
+    }
+
     fn parse_let_with_semi(&mut self, semi: bool) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::Let)?.span;
         let (name, name_span) = self.expect_ident()?;
@@ -102,22 +119,7 @@ impl Parser {
             false
         };
         if typed && self.match_kind(TokenKind::LBracket) {
-            let len_token = self.advance_token().clone();
-            let len = match len_token.kind {
-                TokenKind::Number(value) if value > 0 => value as usize,
-                TokenKind::Number(_) => {
-                    return Err(Diagnostic::new(
-                        "array length must be greater than zero",
-                        len_token.span,
-                    ));
-                }
-                kind => {
-                    return Err(Diagnostic::new(
-                        format!("expected array length, found {kind:?}"),
-                        len_token.span,
-                    ));
-                }
-            };
+            let len_expr = self.parse_expr()?;
             self.expect(TokenKind::RBracket)?;
             let init = if self.match_kind(TokenKind::Eq) {
                 Some(self.parse_array_initializer()?)
@@ -127,12 +129,13 @@ impl Parser {
             let end = if semi {
                 self.expect(TokenKind::Semi)?.span
             } else {
-                init.as_ref().map_or(len_token.span, ArrayInit::span)
+                init.as_ref()
+                    .map_or_else(|| len_expr.span(), ArrayInit::span)
             };
             return Ok(Stmt::LetArray {
                 name,
                 name_span,
-                len,
+                len: ArrayLen::Explicit(len_expr),
                 init,
                 span: start.join(end),
             });
@@ -157,7 +160,7 @@ impl Parser {
                 return Ok(Stmt::LetArray {
                     name,
                     name_span,
-                    len,
+                    len: ArrayLen::Inferred(len),
                     init: Some(init),
                     span: start.join(end),
                 });
@@ -784,7 +787,8 @@ fn binary(left: Expr, op: BinOp, right: Expr) -> Expr {
 
 fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
-        Stmt::Let { span, .. }
+        Stmt::Const { span, .. }
+        | Stmt::Let { span, .. }
         | Stmt::LetArray { span, .. }
         | Stmt::Assign { span, .. }
         | Stmt::ArrayAssign { span, .. }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{ArrayInit, BinOp, Expr, Function, Program, ReturnType, Stmt, UnOp};
+use crate::ast::{ArrayInit, ArrayLen, BinOp, Expr, Function, Program, ReturnType, Stmt, UnOp};
 use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
@@ -63,6 +63,7 @@ pub struct ResolvedFunction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedStmt {
+    Const,
     Let {
         cell: usize,
         init: Option<ResolvedExpr>,
@@ -183,6 +184,7 @@ struct Scope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Symbol {
+    Const { value: u8, declared_at: usize },
     Scalar(usize),
     Array { base: usize, len: usize },
 }
@@ -197,6 +199,7 @@ struct Resolver {
     function_return_types: Vec<ReturnType>,
     call_graph: Vec<Vec<usize>>,
     current_function: Option<usize>,
+    current_function_start: Option<usize>,
     free_cells: Vec<usize>,
     next_cell: usize,
     high_water: usize,
@@ -214,6 +217,7 @@ impl Resolver {
             function_return_types: Vec::new(),
             call_graph: Vec::new(),
             current_function: None,
+            current_function_start: None,
             free_cells: Vec::new(),
             next_cell: TEMP_COUNT,
             high_water: TEMP_COUNT,
@@ -261,8 +265,10 @@ impl Resolver {
                 params.push(cell);
             }
             let previous = self.current_function.replace(index);
+            let previous_start = self.current_function_start.replace(function.span.start);
             let body = self.resolve_stmts(&function.body, 0)?;
             self.current_function = previous;
+            self.current_function_start = previous_start;
             self.pop_scope_retain();
             if function.return_type == ReturnType::Byte && !stmts_always_return(&body) {
                 return Err(Diagnostic::new(
@@ -367,6 +373,28 @@ impl Resolver {
 
     fn resolve_stmt(&mut self, stmt: &Stmt, loop_depth: usize) -> Result<ResolvedStmt, Diagnostic> {
         match stmt {
+            Stmt::Const {
+                name,
+                name_span,
+                expr,
+                ..
+            } => {
+                if self.current_scope().names.contains_key(name) {
+                    return Err(Diagnostic::new(
+                        format!("name `{name}` already declared in this scope"),
+                        *name_span,
+                    ));
+                }
+                let value = self.eval_const_expr(expr)?;
+                self.current_scope_mut().names.insert(
+                    name.clone(),
+                    Symbol::Const {
+                        value,
+                        declared_at: name_span.start,
+                    },
+                );
+                Ok(ResolvedStmt::Const)
+            }
             Stmt::Let {
                 name,
                 name_span,
@@ -411,28 +439,25 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                let base = self.alloc_scope_block(4 + *len);
+                let len = self.resolve_array_len(len)?;
+                let base = self.alloc_scope_block(4 + len);
                 self.current_scope_mut()
                     .names
-                    .insert(name.clone(), Symbol::Array { base, len: *len });
+                    .insert(name.clone(), Symbol::Array { base, len });
                 self.current_scope_mut()
                     .owned_cells
-                    .extend(base..base + 4 + *len);
+                    .extend(base..base + 4 + len);
                 self.define_public_symbol(
                     name,
                     base,
                     SymbolInfo::Array {
                         name: name.clone(),
                         base,
-                        len: *len,
+                        len,
                     },
                 );
-                let init = resolve_array_init(init.as_ref(), *len)?;
-                Ok(ResolvedStmt::LetArray {
-                    base,
-                    len: *len,
-                    init,
-                })
+                let init = self.resolve_array_init(init.as_ref(), len)?;
+                Ok(ResolvedStmt::LetArray { base, len, init })
             }
             Stmt::Assign {
                 name,
@@ -455,7 +480,7 @@ impl Resolver {
                 ..
             } => {
                 let (base, len) = self.lookup_array(name, *name_span)?;
-                check_const_index(index, len)?;
+                self.check_const_index(index, len)?;
                 Ok(ResolvedStmt::ArraySet {
                     base,
                     len,
@@ -479,7 +504,7 @@ impl Resolver {
                 ..
             } => {
                 let (base, len) = self.lookup_array(name, *name_span)?;
-                check_const_index(index, len)?;
+                self.check_const_index(index, len)?;
                 Ok(ResolvedStmt::ReadArray {
                     base,
                     len,
@@ -597,11 +622,15 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) -> Result<ResolvedExpr, Diagnostic> {
         match expr {
             Expr::Byte(value, _) => Ok(ResolvedExpr::Byte(*value)),
-            Expr::Var(name, span) => Ok(ResolvedExpr::Var(self.lookup_scalar(
-                name,
-                *span,
-                "use of undeclared variable",
-            )?)),
+            Expr::Var(name, span) => {
+                match self.lookup_symbol(name, *span, "use of undeclared variable")? {
+                    Symbol::Const { value, .. } => Ok(ResolvedExpr::Byte(value)),
+                    Symbol::Scalar(cell) => Ok(ResolvedExpr::Var(cell)),
+                    Symbol::Array { .. } => {
+                        Err(Diagnostic::new(format!("`{name}` is an array"), *span))
+                    }
+                }
+            }
             Expr::ArrayGet {
                 name,
                 name_span,
@@ -609,7 +638,7 @@ impl Resolver {
                 ..
             } => {
                 let (base, len) = self.lookup_array(name, *name_span)?;
-                check_const_index(index, len)?;
+                self.check_const_index(index, len)?;
                 Ok(ResolvedExpr::ArrayGet {
                     base,
                     len,
@@ -676,17 +705,154 @@ impl Resolver {
         Ok((function, args))
     }
 
+    fn resolve_array_len(&self, len: &ArrayLen) -> Result<usize, Diagnostic> {
+        match len {
+            ArrayLen::Inferred(len) => {
+                if *len > usize::from(u8::MAX) {
+                    Err(Diagnostic::bare(
+                        "inferred array length exceeds the byte limit of 255",
+                    ))
+                } else {
+                    Ok(*len)
+                }
+            }
+            ArrayLen::Explicit(expr) => {
+                let len = self.eval_const_expr(expr)?;
+                if len == 0 {
+                    Err(Diagnostic::new(
+                        "array length must be greater than zero",
+                        expr.span(),
+                    ))
+                } else {
+                    Ok(usize::from(len))
+                }
+            }
+        }
+    }
+
+    fn resolve_array_init(
+        &self,
+        init: Option<&ArrayInit>,
+        len: usize,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        let Some(init) = init else {
+            return Ok(Vec::new());
+        };
+
+        match init {
+            ArrayInit::Bytes(bytes, span) => {
+                if bytes.len() != len {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "array initializer has {} elements, but length is {len}",
+                            bytes.len()
+                        ),
+                        *span,
+                    ));
+                }
+                Ok(bytes.clone())
+            }
+            ArrayInit::Items(items) => {
+                if items.len() != len {
+                    let span = items
+                        .last()
+                        .map(Expr::span)
+                        .unwrap_or_else(|| Span::point(0));
+                    return Err(Diagnostic::new(
+                        format!(
+                            "array initializer has {} elements, but length is {len}",
+                            items.len()
+                        ),
+                        span,
+                    ));
+                }
+                items
+                    .iter()
+                    .map(|expr| {
+                        self.eval_const_expr(expr).map_err(|_| {
+                            Diagnostic::new(
+                                "array initializer elements must be constant bytes",
+                                expr.span(),
+                            )
+                        })
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn check_const_index(&self, index: &Expr, len: usize) -> Result<(), Diagnostic> {
+        if let Ok(value) = self.eval_const_expr(index) {
+            if usize::from(value) >= len {
+                return Err(Diagnostic::new(
+                    format!("array index {value} is out of bounds for length {len}"),
+                    index.span(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_const_expr(&self, expr: &Expr) -> Result<u8, Diagnostic> {
+        match expr {
+            Expr::Byte(value, _) => Ok(*value),
+            Expr::Var(name, span) => match self.lookup_symbol(
+                name,
+                *span,
+                "constant expression references undeclared or forward name",
+            )? {
+                Symbol::Const { value, .. } => Ok(value),
+                Symbol::Scalar(_) => Err(Diagnostic::new(
+                    format!("constant expression cannot use variable `{name}`"),
+                    *span,
+                )),
+                Symbol::Array { .. } => Err(Diagnostic::new(
+                    format!("constant expression cannot use array `{name}`"),
+                    *span,
+                )),
+            },
+            Expr::ArrayGet { span, .. } => Err(Diagnostic::new(
+                "constant expression cannot access an array",
+                *span,
+            )),
+            Expr::Call { span, .. } => Err(Diagnostic::new(
+                "constant expression cannot call a function",
+                *span,
+            )),
+            Expr::Unary { op, expr, .. } => Ok(eval_const_unary(*op, self.eval_const_expr(expr)?)),
+            Expr::Binary {
+                left, op, right, ..
+            } => Ok(eval_const_binary(
+                self.eval_const_expr(left)?,
+                *op,
+                self.eval_const_expr(right)?,
+            )),
+        }
+    }
+
     fn lookup_symbol(&self, name: &str, span: Span, prefix: &str) -> Result<Symbol, Diagnostic> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.names.get(name).copied())
-            .ok_or_else(|| Diagnostic::new(format!("{prefix} `{name}`"), span))
+        for (scope_index, scope) in self.scopes.iter().enumerate().rev() {
+            let Some(symbol) = scope.names.get(name).copied() else {
+                continue;
+            };
+            if scope_index == 0 {
+                if let (Symbol::Const { declared_at, .. }, Some(function_start)) =
+                    (symbol, self.current_function_start)
+                {
+                    if declared_at > function_start {
+                        break;
+                    }
+                }
+            }
+            return Ok(symbol);
+        }
+        Err(Diagnostic::new(format!("{prefix} `{name}`"), span))
     }
 
     fn lookup_scalar(&self, name: &str, span: Span, prefix: &str) -> Result<usize, Diagnostic> {
         match self.lookup_symbol(name, span, prefix)? {
             Symbol::Scalar(cell) => Ok(cell),
+            Symbol::Const { .. } => Err(Diagnostic::new(format!("`{name}` is a constant"), span)),
             Symbol::Array { .. } => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
         }
     }
@@ -694,7 +860,9 @@ impl Resolver {
     fn lookup_array(&self, name: &str, span: Span) -> Result<(usize, usize), Diagnostic> {
         match self.lookup_symbol(name, span, "use of undeclared array")? {
             Symbol::Array { base, len } => Ok((base, len)),
-            Symbol::Scalar(_) => Err(Diagnostic::new(format!("`{name}` is not an array"), span)),
+            Symbol::Const { .. } | Symbol::Scalar(_) => {
+                Err(Diagnostic::new(format!("`{name}` is not an array"), span))
+            }
         }
     }
 
@@ -766,126 +934,57 @@ impl Resolver {
     }
 }
 
-fn check_const_index(index: &Expr, len: usize) -> Result<(), Diagnostic> {
-    if let Expr::Byte(value, span) = index {
-        if usize::from(*value) >= len {
-            return Err(Diagnostic::new(
-                format!("array index {value} is out of bounds for length {len}"),
-                *span,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn resolve_array_init(init: Option<&ArrayInit>, len: usize) -> Result<Vec<u8>, Diagnostic> {
-    let Some(init) = init else {
-        return Ok(Vec::new());
-    };
-
-    match init {
-        ArrayInit::Bytes(bytes, span) => {
-            if bytes.len() != len {
-                return Err(Diagnostic::new(
-                    format!(
-                        "array initializer has {} elements, but length is {len}",
-                        bytes.len()
-                    ),
-                    *span,
-                ));
-            }
-            Ok(bytes.clone())
-        }
-        ArrayInit::Items(items) => {
-            if items.len() != len {
-                let span = items
-                    .last()
-                    .map(Expr::span)
-                    .unwrap_or_else(|| Span::point(0));
-                return Err(Diagnostic::new(
-                    format!(
-                        "array initializer has {} elements, but length is {len}",
-                        items.len()
-                    ),
-                    span,
-                ));
-            }
-            items
-                .iter()
-                .map(|expr| {
-                    const_eval(expr).ok_or_else(|| {
-                        Diagnostic::new(
-                            "array initializer elements must be constant bytes",
-                            expr.span(),
-                        )
-                    })
-                })
-                .collect()
-        }
+fn eval_const_unary(op: UnOp, value: u8) -> u8 {
+    match op {
+        UnOp::Not => u8::from(value == 0),
+        UnOp::BitNot => !value,
     }
 }
 
-fn const_eval(expr: &Expr) -> Option<u8> {
-    match expr {
-        Expr::Byte(value, _) => Some(*value),
-        Expr::Var(_, _) | Expr::ArrayGet { .. } | Expr::Call { .. } => None,
-        Expr::Unary { op, expr, .. } => {
-            let value = const_eval(expr)?;
-            Some(match op {
-                UnOp::Not => u8::from(value == 0),
-                UnOp::BitNot => !value,
-            })
+fn eval_const_binary(left: u8, op: BinOp, right: u8) -> u8 {
+    match op {
+        BinOp::Or => u8::from(left != 0 || right != 0),
+        BinOp::And => u8::from(left != 0 && right != 0),
+        BinOp::BitOr => left | right,
+        BinOp::BitXor => left ^ right,
+        BinOp::BitAnd => left & right,
+        BinOp::Shl => {
+            if right >= 8 {
+                0
+            } else {
+                left << right
+            }
         }
-        Expr::Binary {
-            left, op, right, ..
-        } => {
-            let left = const_eval(left)?;
-            let right = const_eval(right)?;
-            Some(match op {
-                BinOp::Or => u8::from(left != 0 || right != 0),
-                BinOp::And => u8::from(left != 0 && right != 0),
-                BinOp::BitOr => left | right,
-                BinOp::BitXor => left ^ right,
-                BinOp::BitAnd => left & right,
-                BinOp::Shl => {
-                    if right >= 8 {
-                        0
-                    } else {
-                        left << right
-                    }
-                }
-                BinOp::Shr => {
-                    if right >= 8 {
-                        0
-                    } else {
-                        left >> right
-                    }
-                }
-                BinOp::Add => left.wrapping_add(right),
-                BinOp::Sub => left.wrapping_sub(right),
-                BinOp::Mul => left.wrapping_mul(right),
-                BinOp::Div => {
-                    if right == 0 {
-                        0
-                    } else {
-                        left / right
-                    }
-                }
-                BinOp::Mod => {
-                    if right == 0 {
-                        left
-                    } else {
-                        left % right
-                    }
-                }
-                BinOp::Eq => u8::from(left == right),
-                BinOp::Ne => u8::from(left != right),
-                BinOp::Lt => u8::from(left < right),
-                BinOp::Le => u8::from(left <= right),
-                BinOp::Gt => u8::from(left > right),
-                BinOp::Ge => u8::from(left >= right),
-            })
+        BinOp::Shr => {
+            if right >= 8 {
+                0
+            } else {
+                left >> right
+            }
         }
+        BinOp::Add => left.wrapping_add(right),
+        BinOp::Sub => left.wrapping_sub(right),
+        BinOp::Mul => left.wrapping_mul(right),
+        BinOp::Div => {
+            if right == 0 {
+                0
+            } else {
+                left / right
+            }
+        }
+        BinOp::Mod => {
+            if right == 0 {
+                left
+            } else {
+                left % right
+            }
+        }
+        BinOp::Eq => u8::from(left == right),
+        BinOp::Ne => u8::from(left != right),
+        BinOp::Lt => u8::from(left < right),
+        BinOp::Le => u8::from(left <= right),
+        BinOp::Gt => u8::from(left > right),
+        BinOp::Ge => u8::from(left >= right),
     }
 }
 
@@ -896,7 +995,10 @@ fn count_stmt_calls(stmts: &[ResolvedStmt]) -> usize {
 fn count_stmt_call(stmt: &ResolvedStmt) -> usize {
     match stmt {
         ResolvedStmt::Let { init, .. } => init.as_ref().map_or(0, count_expr_calls),
-        ResolvedStmt::LetArray { .. } | ResolvedStmt::Puts(_) | ResolvedStmt::Read(_) => 0,
+        ResolvedStmt::Const
+        | ResolvedStmt::LetArray { .. }
+        | ResolvedStmt::Puts(_)
+        | ResolvedStmt::Read(_) => 0,
         ResolvedStmt::Assign { expr, .. }
         | ResolvedStmt::Put(expr)
         | ResolvedStmt::Print(expr)

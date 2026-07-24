@@ -30,6 +30,12 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
+    Const {
+        name: String,
+        name_span: Span,
+        expr: Expr,
+        span: Span,
+    },
     Let {
         name: String,
         name_span: Span,
@@ -39,7 +45,7 @@ pub enum Stmt {
     LetArray {
         name: String,
         name_span: Span,
-        len: usize,
+        len: ArrayLen,
         init: Option<ArrayInit>,
         span: Span,
     },
@@ -99,6 +105,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayLen {
+    Explicit(Expr),
+    Inferred(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

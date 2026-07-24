@@ -9,6 +9,7 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Let,
+    Const,
     Fn,
     Return,
     If,
@@ -236,6 +237,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 let kind = match text.as_str() {
                     "let" => TokenKind::Let,
+                    "const" => TokenKind::Const,
                     "fn" => TokenKind::Fn,
                     "return" => TokenKind::Return,
                     "if" => TokenKind::If,

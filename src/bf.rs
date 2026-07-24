@@ -321,6 +321,7 @@ fn emit_controlled_stmt(stmt: &Stmt, out: &mut BfOut, ctx: LoopContext) -> Resul
 
 fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Result<(), String> {
     match stmt {
+        Stmt::Const => {}
         Stmt::Let { cell, init } => {
             if let Some(expr) = init {
                 emit_expr_to(expr, *cell, out, &[*cell])?;
@@ -404,7 +405,8 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
 
 fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
     match stmt {
-        Stmt::Let { .. }
+        Stmt::Const
+        | Stmt::Let { .. }
         | Stmt::LetArray { .. }
         | Stmt::Assign { .. }
         | Stmt::ArraySet { .. }
