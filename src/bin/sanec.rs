@@ -145,7 +145,11 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
             }
             sane::sema::SymbolInfo::Array { name, base, len } => {
                 let first = base + 4;
-                let last = first + len - 1;
+                let last = if *len == 0 {
+                    first - 1
+                } else {
+                    first + len - 1
+                };
                 lines.push(format!(
                     "{name} ARRAY BASE {base} LEN {len} DATA CELLS {first} TO {last}"
                 ));

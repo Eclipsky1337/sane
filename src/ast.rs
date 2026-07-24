@@ -108,6 +108,13 @@ pub enum ArrayInit {
 }
 
 impl ArrayInit {
+    pub fn len(&self) -> usize {
+        match self {
+            ArrayInit::Items(items) => items.len(),
+            ArrayInit::Bytes(bytes, _) => bytes.len(),
+        }
+    }
+
     pub fn span(&self) -> Span {
         match self {
             ArrayInit::Items(items) => items

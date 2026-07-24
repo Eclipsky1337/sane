@@ -138,6 +138,30 @@ impl Parser {
             });
         }
         let init = if self.match_kind(TokenKind::Eq) {
+            if !typed
+                && (self.at(TokenKind::LBracket) || matches!(self.peek(), TokenKind::StringLit(_)))
+            {
+                let init = self.parse_array_initializer()?;
+                if matches!(&init, ArrayInit::Items(items) if items.is_empty()) {
+                    return Err(Diagnostic::new(
+                        "cannot infer the element type of an empty array",
+                        init.span(),
+                    ));
+                }
+                let len = init.len();
+                let end = if semi {
+                    self.expect(TokenKind::Semi)?.span
+                } else {
+                    init.span()
+                };
+                return Ok(Stmt::LetArray {
+                    name,
+                    name_span,
+                    len,
+                    init: Some(init),
+                    span: start.join(end),
+                });
+            }
             Some(self.parse_expr()?)
         } else if typed {
             None
