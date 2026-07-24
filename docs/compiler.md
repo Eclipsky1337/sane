@@ -1,0 +1,87 @@
+# Compiler
+
+`sanec` compiles Sane source into Brainfuck.
+
+## Usage
+
+```text
+Usage: sanec [source.sn] [-o out.bf] [-s]
+
+Options:
+  source.sn       Read Sane source from file, or stdin if omitted
+  -o <file>       Write Brainfuck output to <file>
+  -s              Add BF-safe symbol table comments
+  -h, --help      Show this help text
+  -V, --version   Show compiler version
+```
+
+## Input And Output
+
+With a source path, `sanec` reads that file:
+
+```sh
+sanec program.sn
+```
+
+Without a source path, it reads Sane source from standard input:
+
+```sh
+printf "put 'A';" | sanec
+```
+
+Generated Brainfuck is written to standard output unless `-o` specifies a
+file:
+
+```sh
+sanec program.sn -o program.bf
+```
+
+## Symbol Annotations
+
+`-s` prepends a public symbol table to the generated Brainfuck:
+
+```sh
+sanec program.sn -o program.bf -s
+```
+
+The annotation includes temporary, scratch, control, scalar, and array cell
+locations. It avoids all eight Brainfuck instruction characters, so conforming
+interpreters ignore it as comments.
+
+Example shape:
+
+```text
+SANE SYMBOLS
+TEMP CELLS 0 TO 7
+SCRATCH BASE 12
+CONTROL BASE 24
+x CELL 8
+data ARRAY BASE 9 LEN 3 DATA CELLS 13 TO 15
+END SANE SYMBOLS
+```
+
+These symbols can be inspected by the `sanei` debugger. See
+[Interpreter And Debugger](interpreter.md).
+
+## Diagnostics
+
+Lexer, parser, and semantic errors include the source path, line, column, and a
+caret:
+
+```text
+expected Semi, found Put
+  --> bad.sn:2:1
+   |
+ 2 | put x;
+   | ^
+```
+
+Compiler failures are written to standard error and return a non-zero exit
+status.
+
+## Examples
+
+```sh
+sanec examples/luhn4.sn -o luhn4.bf
+sanec examples/toy_aes_round.sn -o toy.bf -s
+```
