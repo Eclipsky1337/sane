@@ -8,7 +8,8 @@ Sane is a small programming language that compiles to 8-bit Brainfuck.
 Sane supports byte and void functions through the basic-block IR of the
 experimental `pc` backend. The compiler automatically uses the structured
 backend for programs without functions and the PC backend for programs with
-functions.
+functions. The language also supports compile-time byte constants and inferred
+array declarations.
 
 ## Quick Start
 

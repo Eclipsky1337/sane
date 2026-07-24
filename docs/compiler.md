@@ -37,6 +37,11 @@ file:
 sanec program.sn -o program.bf
 ```
 
+The compiler resolves `const` declarations without allocating tape cells.
+Constants can define byte expressions and explicit array lengths. Array lengths
+may also be inferred from list and string initializers; see the
+[Language Reference](language.md) for syntax and scope rules.
+
 ## Backends
 
 The default `auto` mode selects the structured backend for programs without

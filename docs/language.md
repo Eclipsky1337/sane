@@ -47,6 +47,29 @@ let x = 'A';
 put x; // A
 ```
 
+## Constants
+
+Constants are compile-time byte values and do not allocate tape cells:
+
+```sane
+const BLOCK_SIZE = 16;
+const NEWLINE = '\n';
+const MASK = (1 << 4) - 1;
+
+let state: byte[BLOCK_SIZE];
+put NEWLINE;
+```
+
+Constants are lexically scoped and may use literals, earlier visible
+constants, unary operators, and binary operators. Their arithmetic uses the
+same wrapping byte semantics as runtime expressions. Constants may appear in
+ordinary expressions, explicit array lengths, indexes, and array initializers.
+
+Forward references, cyclic or self references, runtime variables, function
+calls, and array accesses are not constant expressions. Explicit array lengths
+must evaluate to a non-zero byte value. Inferred arrays may have length zero
+when their byte element type is established by an empty string initializer.
+
 ## Arrays
 
 Arrays are fixed-size byte arrays:
