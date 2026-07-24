@@ -65,6 +65,11 @@ pub enum Stmt {
     Put(Expr, Span),
     Puts(Vec<u8>, Span),
     Print(Expr, Span),
+    PrintFormat {
+        parts: Vec<Vec<u8>>,
+        args: Vec<Expr>,
+        span: Span,
+    },
     Println(Expr, Span),
     Read(String, Span),
     ReadArray {

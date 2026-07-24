@@ -335,6 +335,33 @@ impl Parser {
         } else {
             self.expect(TokenKind::Print)?.span
         };
+        if !newline && matches!(self.peek(), TokenKind::StringLit(_)) {
+            let token = self.advance_token().clone();
+            let TokenKind::StringLit(bytes) = token.kind else {
+                unreachable!("formatted print is selected by token kind");
+            };
+            let parts = parse_format_parts(&bytes, token.span)?;
+            let mut args = Vec::new();
+            while self.match_kind(TokenKind::Comma) {
+                args.push(self.parse_expr()?);
+            }
+            let end = self.expect(TokenKind::Semi)?.span;
+            let placeholders = parts.len() - 1;
+            if placeholders != args.len() {
+                return Err(Diagnostic::new(
+                    format!(
+                        "format string has {placeholders} placeholders, but {} arguments were provided",
+                        args.len()
+                    ),
+                    token.span,
+                ));
+            }
+            return Ok(Stmt::PrintFormat {
+                parts,
+                args,
+                span: start.join(end),
+            });
+        }
         let expr = self.parse_expr()?;
         let end = self.expect(TokenKind::Semi)?.span;
         if newline {
@@ -795,6 +822,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Put(_, span)
         | Stmt::Puts(_, span)
         | Stmt::Print(_, span)
+        | Stmt::PrintFormat { span, .. }
         | Stmt::Println(_, span)
         | Stmt::Read(_, span)
         | Stmt::ReadArray { span, .. }
@@ -808,4 +836,38 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Loop { span, .. }
         | Stmt::For { span, .. } => *span,
     }
+}
+
+fn parse_format_parts(bytes: &[u8], span: Span) -> Result<Vec<Vec<u8>>, Diagnostic> {
+    let mut parts = Vec::new();
+    let mut literal = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' if bytes.get(index + 1) == Some(&b'{') => {
+                literal.push(b'{');
+                index += 2;
+            }
+            b'}' if bytes.get(index + 1) == Some(&b'}') => {
+                literal.push(b'}');
+                index += 2;
+            }
+            b'{' if bytes.get(index + 1) == Some(&b'}') => {
+                parts.push(std::mem::take(&mut literal));
+                index += 2;
+            }
+            b'{' | b'}' => {
+                return Err(Diagnostic::new(
+                    "unmatched brace in format string; use `{{`, `}}`, or `{}`",
+                    span,
+                ));
+            }
+            byte => {
+                literal.push(byte);
+                index += 1;
+            }
+        }
+    }
+    parts.push(literal);
+    Ok(parts)
 }

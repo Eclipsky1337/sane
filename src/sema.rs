@@ -491,6 +491,18 @@ impl Resolver {
             Stmt::Put(expr, _) => Ok(ResolvedStmt::Put(self.resolve_expr(expr)?)),
             Stmt::Puts(bytes, _) => Ok(ResolvedStmt::Puts(bytes.clone())),
             Stmt::Print(expr, _) => Ok(ResolvedStmt::Print(self.resolve_expr(expr)?)),
+            Stmt::PrintFormat { parts, args, .. } => {
+                let mut stmts = Vec::new();
+                for (index, part) in parts.iter().enumerate() {
+                    if !part.is_empty() {
+                        stmts.push(ResolvedStmt::Puts(part.clone()));
+                    }
+                    if let Some(arg) = args.get(index) {
+                        stmts.push(ResolvedStmt::Print(self.resolve_expr(arg)?));
+                    }
+                }
+                Ok(ResolvedStmt::Block(stmts))
+            }
             Stmt::Println(expr, _) => Ok(ResolvedStmt::Println(self.resolve_expr(expr)?)),
             Stmt::Read(name, span) => Ok(ResolvedStmt::Read(self.lookup_scalar(
                 name,
