@@ -26,7 +26,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] literals, declarations, assignment, and casts
   - [x] addition, subtraction, equality, and conditions
   - [x] signed ordering, logical, bitwise, and shift operations
-  - [ ] core arithmetic and comparisons
+  - [x] core arithmetic and comparisons
   - [ ] functions, I/O, and arrays
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,

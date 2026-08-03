@@ -834,6 +834,9 @@ impl Resolver {
                         op,
                         BinOp::Add
                             | BinOp::Sub
+                            | BinOp::Mul
+                            | BinOp::Div
+                            | BinOp::Mod
                             | BinOp::Eq
                             | BinOp::Ne
                             | BinOp::Lt

@@ -1022,6 +1022,16 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
         Expr::Binary { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
             emit_int_add_sub(left, right, *op, dst, out)?;
         }
+        Expr::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } => {
+            emit_int_mul(left, right, dst, out)?;
+        }
+        Expr::Binary { left, op, right } if matches!(op, BinOp::Div | BinOp::Mod) => {
+            emit_int_divmod(left, right, *op, dst, out)?;
+        }
         Expr::Unary {
             op: UnOp::Neg,
             expr,
@@ -1273,6 +1283,21 @@ fn emit_int_shift(
     out.goto(count_cell);
     out.code.push('[');
     out.sub_const(count_cell, 1);
+    emit_int_shift_once(dst, op, true, carry, next_carry, out);
+    out.goto(count_cell);
+    out.code.push(']');
+    out.free_control_cells(3);
+    Ok(())
+}
+
+fn emit_int_shift_once(
+    dst: ValueLayout,
+    op: BinOp,
+    arithmetic_right: bool,
+    carry: usize,
+    next_carry: usize,
+    out: &mut BfOut,
+) {
     match op {
         BinOp::Shl => {
             out.clear(carry);
@@ -1289,11 +1314,13 @@ fn emit_int_shift(
         }
         BinOp::Shr => {
             out.clear(carry);
-            out.clear(out.w(6));
-            out.copy_add(dst.base + 3, out.w(6), T0);
-            out.divmod_const(out.w(6), 128, DivModResult::Quotient);
-            out.mul_const(out.w(6), 128, T0);
-            out.move_add(out.w(6), carry);
+            if arithmetic_right {
+                out.clear(out.w(6));
+                out.copy_add(dst.base + 3, out.w(6), T0);
+                out.divmod_const(out.w(6), 128, DivModResult::Quotient);
+                out.mul_const(out.w(6), 128, T0);
+                out.move_add(out.w(6), carry);
+            }
             for offset in (0..4).rev() {
                 out.clear(next_carry);
                 out.clear(out.w(6));
@@ -1308,9 +1335,237 @@ fn emit_int_shift(
         }
         _ => unreachable!(),
     }
-    out.goto(count_cell);
+}
+
+fn emit_int_mul(
+    left: &Expr,
+    right: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let base = out.alloc_control_cell();
+    for _ in 1..12 {
+        out.alloc_control_cell();
+    }
+    let multiplicand = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let multiplier = ValueLayout {
+        base: base + 4,
+        value_type: ValueType::Int,
+    };
+    let condition = base + 8;
+    let bit = base + 9;
+    let carry = base + 10;
+    let next_carry = base + 11;
+    emit_int_to(right, multiplier, out)?;
+    emit_int_to(left, multiplicand, out)?;
+    for cell in dst.cells() {
+        out.clear(cell);
+    }
+    int_layout_bool(multiplier, condition, out);
+
+    out.goto(condition);
+    out.code.push('[');
+    out.clear(condition);
+    out.clear(bit);
+    out.copy_add(multiplier.base, bit, T0);
+    out.divmod_const(bit, 2, DivModResult::Remainder);
+    out.goto(bit);
+    out.code.push('[');
+    out.clear(bit);
+    emit_int_add_sub(
+        &Expr::Var(dst),
+        &Expr::Var(multiplicand),
+        BinOp::Add,
+        dst,
+        out,
+    )?;
+    out.goto(bit);
     out.code.push(']');
-    out.free_control_cells(3);
+    emit_int_shift_once(multiplicand, BinOp::Shl, false, carry, next_carry, out);
+    emit_int_shift_once(multiplier, BinOp::Shr, false, carry, next_carry, out);
+    int_layout_bool(multiplier, condition, out);
+    out.goto(condition);
+    out.code.push(']');
+    out.free_control_cells(12);
+    Ok(())
+}
+
+fn int_layout_bool(layout: ValueLayout, dst: usize, out: &mut BfOut) {
+    out.clear(dst);
+    for cell in layout.cells() {
+        out.copy_add(cell, dst, T0);
+    }
+    out.boolify(dst, T0);
+}
+
+fn emit_int_divmod(
+    left: &Expr,
+    right: &Expr,
+    op: BinOp,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let base = out.alloc_control_cell();
+    for _ in 1..25 {
+        out.alloc_control_cell();
+    }
+    let dividend = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let divisor = ValueLayout {
+        base: base + 4,
+        value_type: ValueType::Int,
+    };
+    let quotient = ValueLayout {
+        base: base + 8,
+        value_type: ValueType::Int,
+    };
+    let remainder = ValueLayout {
+        base: base + 12,
+        value_type: ValueType::Int,
+    };
+    let nonzero = base + 16;
+    let left_sign = base + 17;
+    let right_sign = base + 18;
+    let quotient_sign = base + 19;
+    let remainder_sign = base + 20;
+    let count = base + 21;
+    let carry = base + 22;
+    let next_carry = base + 23;
+    let compare = base + 24;
+
+    emit_int_to(right, divisor, out)?;
+    emit_int_to(left, dividend, out)?;
+    copy_int_layout(dividend, remainder, out);
+    for cell in quotient.cells() {
+        out.clear(cell);
+    }
+    int_layout_bool(divisor, nonzero, out);
+    int_sign_bit(dividend, left_sign, out);
+    int_sign_bit(divisor, right_sign, out);
+    out.clear(quotient_sign);
+    out.copy_add(left_sign, quotient_sign, T0);
+    out.clear(out.w(6));
+    out.copy_add(right_sign, out.w(6), T0);
+    out.bitwise(quotient_sign, out.w(6), BitOp::Xor);
+    out.clear(remainder_sign);
+    out.copy_add(left_sign, remainder_sign, T0);
+
+    out.goto(nonzero);
+    out.code.push('[');
+    out.clear(nonzero);
+    negate_layout_if(dividend, left_sign, out)?;
+    negate_layout_if(divisor, right_sign, out)?;
+    for cell in quotient.cells().chain(remainder.cells()) {
+        out.clear(cell);
+    }
+    out.clear(count);
+    out.add_const(count, 32);
+    out.goto(count);
+    out.code.push('[');
+    out.sub_const(count, 1);
+
+    emit_int_shift_once(quotient, BinOp::Shl, false, carry, next_carry, out);
+    emit_int_shift_once(remainder, BinOp::Shl, false, carry, next_carry, out);
+    out.clear(out.w(6));
+    out.copy_add(dividend.base + 3, out.w(6), T0);
+    out.divmod_const(out.w(6), 128, DivModResult::Quotient);
+    out.move_add(out.w(6), remainder.base);
+    emit_int_shift_once(dividend, BinOp::Shl, false, carry, next_carry, out);
+
+    emit_int_unsigned_less(remainder, divisor, compare, out)?;
+    out.logical_not(compare, T0);
+    out.goto(compare);
+    out.code.push('[');
+    out.clear(compare);
+    emit_int_add_sub(
+        &Expr::Var(remainder),
+        &Expr::Var(divisor),
+        BinOp::Sub,
+        remainder,
+        out,
+    )?;
+    out.add_const(quotient.base, 1);
+    out.goto(compare);
+    out.code.push(']');
+
+    out.goto(count);
+    out.code.push(']');
+    negate_layout_if(quotient, quotient_sign, out)?;
+    negate_layout_if(remainder, remainder_sign, out)?;
+    out.goto(nonzero);
+    out.code.push(']');
+
+    match op {
+        BinOp::Div => copy_int_layout(quotient, dst, out),
+        BinOp::Mod => copy_int_layout(remainder, dst, out),
+        _ => unreachable!(),
+    }
+    out.free_control_cells(25);
+    Ok(())
+}
+
+fn copy_int_layout(src: ValueLayout, dst: ValueLayout, out: &mut BfOut) {
+    if src == dst {
+        return;
+    }
+    for offset in 0..4 {
+        out.clear(dst.base + offset);
+        out.copy_add(src.base + offset, dst.base + offset, T0);
+    }
+}
+
+fn int_sign_bit(layout: ValueLayout, dst: usize, out: &mut BfOut) {
+    out.clear(dst);
+    out.copy_add(layout.base + 3, dst, T0);
+    out.divmod_const(dst, 128, DivModResult::Quotient);
+}
+
+fn negate_layout_if(layout: ValueLayout, flag: usize, out: &mut BfOut) -> Result<(), String> {
+    out.goto(flag);
+    out.code.push('[');
+    out.clear(flag);
+    emit_int_add_sub(&Expr::Int(0), &Expr::Var(layout), BinOp::Sub, layout, out)?;
+    out.goto(flag);
+    out.code.push(']');
+    Ok(())
+}
+
+fn emit_int_unsigned_less(
+    left: ValueLayout,
+    right: ValueLayout,
+    dst: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let tmp = alloc_temp(&[dst])?;
+    let undecided = out.alloc_control_cell();
+    out.clear(dst);
+    out.clear(undecided);
+    out.add_const(undecided, 1);
+    for offset in (0..4).rev() {
+        out.clear(out.w(4));
+        out.clear(out.w(5));
+        out.copy_add(left.base + offset, out.w(4), tmp);
+        out.copy_add(right.base + offset, out.w(5), tmp);
+        out.less_cells(out.w(4), out.w(5), out.w(6));
+        out.clear(out.w(7));
+        out.copy_add(undecided, out.w(7), tmp);
+        out.bool_and(out.w(7), out.w(6), tmp);
+        out.move_add(out.w(7), dst);
+        out.boolify(dst, tmp);
+
+        out.clear(out.w(4));
+        out.clear(out.w(5));
+        out.copy_add(left.base + offset, out.w(4), tmp);
+        out.copy_add(right.base + offset, out.w(5), tmp);
+        out.eq(out.w(4), out.w(5));
+        out.bool_and(undecided, out.w(4), tmp);
+    }
+    out.free_control_cells(1);
     Ok(())
 }
 

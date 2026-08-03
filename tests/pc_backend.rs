@@ -164,6 +164,22 @@ fn pc_backend_runs_int_bitwise_and_signed_ordering() {
 }
 
 #[test]
+fn pc_backend_runs_int_multiplication() {
+    let bf = compile_pc(
+        "let left: int = -25; let right: int = 40; let product: int = left * right; if product == -1000 { put 'A'; }",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"A");
+}
+
+#[test]
+fn pc_backend_runs_int_division_and_remainder() {
+    let bf = compile_pc(
+        "let left: int = -1000; let right: int = 33; if left / right == -30 { put 'A'; } if left % right == -10 { put 'B'; }",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"AB");
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

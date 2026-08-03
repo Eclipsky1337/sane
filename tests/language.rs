@@ -187,6 +187,48 @@ fn int_shifts_cross_cells_and_preserve_sign() {
 }
 
 #[test]
+fn int_multiplication_wraps_across_four_cells() {
+    let src = "
+        let product: int = 300 * 400;
+        if product == 120000 { put 'A'; }
+        let negative: int = -3 * 7;
+        if negative == -21 { put 'B'; }
+        let wrapped: int = 0x00010000 * 0x00010000;
+        if wrapped == 0 { put 'C'; }
+        let mixed: int = 5 * 300;
+        if mixed == 1500 { put 'D'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCD");
+}
+
+#[test]
+fn int_division_and_remainder_are_signed_and_deterministic() {
+    let src = "
+        let a: int = 7;
+        let b: int = 3;
+        if a / b == 2 && a % b == 1 { put 'A'; }
+        a = -7;
+        if a / b == -2 && a % b == -1 { put 'B'; }
+        b = -3;
+        if a / b == 2 && a % b == -1 { put 'C'; }
+        a = 7;
+        if a / b == -2 && a % b == 1 { put 'D'; }
+
+        let large: int = 0x7fffffff;
+        let scale: int = 65536;
+        if large / scale == 32767 && large % scale == 65535 { put 'E'; }
+
+        let zero: int = 0;
+        if large / zero == 0 && large % zero == large { put 'F'; }
+        let minimum: int = 0x80000000;
+        if minimum / -1 == minimum && minimum % -1 == 0 { put 'G'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCDEFG");
+}
+
+#[test]
 fn scratch_starts_after_globals() {
     let tokens = lexer::lex("let x: byte;").unwrap();
     let mut parser = parser::Parser::new(tokens);
