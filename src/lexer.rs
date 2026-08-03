@@ -30,7 +30,7 @@ pub enum TokenKind {
     True,
     False,
     Ident(String),
-    Number(u32),
+    Number(u32, bool),
     StringLit(Vec<u8>),
     Colon,
     Comma,
@@ -195,7 +195,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 let value = read_char_escape(&mut chars, pos)?;
                 match chars.next() {
                     Some((end, '\'')) => {
-                        tokens.push(tok(TokenKind::Number(value as u32), pos, end + 1))
+                        tokens.push(tok(TokenKind::Number(value as u32, true), pos, end + 1))
                     }
                     _ => {
                         return Err(Diagnostic::new(
@@ -356,7 +356,7 @@ where
             ),
         )
     })?;
-    Ok(tok(TokenKind::Number(value), pos, end))
+    Ok(tok(TokenKind::Number(value, radix == 10), pos, end))
 }
 
 fn read_char_escape<I>(chars: &mut std::iter::Peekable<I>, pos: usize) -> Result<u8, Diagnostic>

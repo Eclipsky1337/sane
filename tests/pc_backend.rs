@@ -211,6 +211,14 @@ fn pc_backend_runs_int_functions_and_typed_spills() {
 }
 
 #[test]
+fn pc_backend_runs_int_arrays_with_dynamic_indexes() {
+    let bf = compile_pc(
+        "let values: int[3] = [100000, -2, 3]; let index: byte = 1; values[index] = values[0] * 4; print values[index];",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"400000");
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

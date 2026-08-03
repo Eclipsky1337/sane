@@ -30,6 +30,23 @@ fn constants_evaluate_byte_expressions_at_compile_time() {
 }
 
 #[test]
+fn constants_evaluate_typed_int_expressions() {
+    let src = "
+        const WIDE = 65536;
+        const NEGATIVE = -123456;
+        const PRODUCT = WIDE * 3;
+        const BITS = 0xffffffff;
+        if PRODUCT == 196608 && NEGATIVE < 0 && BITS == -1 { put 'A'; }
+        let values: int[2] = [PRODUCT, NEGATIVE];
+        print values[0];
+        put ':';
+        print values[1];
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"A196608:-123456");
+}
+
+#[test]
 fn constants_are_block_scoped_and_may_shadow() {
     let src = "
         const VALUE = 'A';

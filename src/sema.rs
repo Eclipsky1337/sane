@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Program, ReturnType, Stmt, UnOp,
-    ValueType,
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, IntLiteralKind, Program, ReturnType,
+    Stmt, UnOp, ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 
@@ -30,6 +30,32 @@ impl ValueLayout {
 
     pub fn cells(self) -> std::ops::Range<usize> {
         self.base..self.base + self.cell_width()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArrayLayout {
+    pub base: usize,
+    pub len: usize,
+    pub value_type: ValueType,
+}
+
+impl ArrayLayout {
+    pub const fn storage_len(self) -> usize {
+        match self.value_type {
+            ValueType::Byte => 4 + self.len,
+            ValueType::Int => self.len * 4,
+        }
+    }
+
+    pub const fn element(self, index: usize) -> ValueLayout {
+        ValueLayout {
+            base: match self.value_type {
+                ValueType::Byte => self.base + 4 + index,
+                ValueType::Int => self.base + index * 4,
+            },
+            value_type: self.value_type,
+        }
     }
 }
 
@@ -73,6 +99,7 @@ pub enum SymbolInfo {
         name: String,
         base: usize,
         len: usize,
+        value_type: ValueType,
     },
 }
 
@@ -100,17 +127,15 @@ pub enum ResolvedStmt {
         init: Option<ResolvedExpr>,
     },
     LetArray {
-        base: usize,
-        len: usize,
-        init: Vec<u8>,
+        layout: ArrayLayout,
+        init: Vec<u32>,
     },
     Assign {
         layout: ValueLayout,
         expr: ResolvedExpr,
     },
     ArraySet {
-        base: usize,
-        len: usize,
+        layout: ArrayLayout,
         index: ResolvedExpr,
         expr: ResolvedExpr,
     },
@@ -120,8 +145,7 @@ pub enum ResolvedStmt {
     Println(ResolvedExpr),
     Read(ValueLayout),
     ReadArray {
-        base: usize,
-        len: usize,
+        layout: ArrayLayout,
         index: ResolvedExpr,
     },
     Call {
@@ -158,8 +182,7 @@ pub enum ResolvedExpr {
     Int(u32),
     Var(ValueLayout),
     ArrayGet {
-        base: usize,
-        len: usize,
+        layout: ArrayLayout,
         index: Box<ResolvedExpr>,
     },
     Call {
@@ -185,9 +208,10 @@ pub enum ResolvedExpr {
 impl ResolvedExpr {
     pub fn value_type(&self) -> ValueType {
         match self {
-            Self::Byte(_) | Self::ArrayGet { .. } => ValueType::Byte,
+            Self::Byte(_) => ValueType::Byte,
             Self::Int(_) => ValueType::Int,
             Self::Var(layout) => layout.value_type,
+            Self::ArrayGet { layout, .. } => layout.value_type,
             Self::Call { value_type, .. } => *value_type,
             Self::Unary { op, expr } => match op {
                 UnOp::Not => ValueType::Byte,
@@ -258,9 +282,19 @@ struct Scope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Symbol {
-    Const { value: u8, declared_at: usize },
+    Const {
+        value: u32,
+        value_type: ValueType,
+        declared_at: usize,
+    },
     Scalar(ValueLayout),
-    Array { base: usize, len: usize },
+    Array(ArrayLayout),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConstValue {
+    value: u32,
+    value_type: ValueType,
 }
 
 struct Resolver {
@@ -475,7 +509,8 @@ impl Resolver {
                 self.current_scope_mut().names.insert(
                     name.clone(),
                     Symbol::Const {
-                        value,
+                        value: value.value,
+                        value_type: value.value_type,
                         declared_at: name_span.start,
                     },
                 );
@@ -532,6 +567,7 @@ impl Resolver {
             Stmt::LetArray {
                 name,
                 name_span,
+                value_type,
                 len,
                 init,
                 ..
@@ -543,13 +579,26 @@ impl Resolver {
                     ));
                 }
                 let len = self.resolve_array_len(len)?;
-                let base = self.alloc_scope_block(4 + len);
+                let value_type = match value_type {
+                    Some(value_type) => *value_type,
+                    None => self.infer_array_type(init.as_ref())?,
+                };
+                let storage_len = match value_type {
+                    ValueType::Byte => 4 + len,
+                    ValueType::Int => len * 4,
+                };
+                let base = self.alloc_scope_block(storage_len);
+                let layout = ArrayLayout {
+                    base,
+                    len,
+                    value_type,
+                };
                 self.current_scope_mut()
                     .names
-                    .insert(name.clone(), Symbol::Array { base, len });
+                    .insert(name.clone(), Symbol::Array(layout));
                 self.current_scope_mut()
                     .owned_cells
-                    .extend(base..base + 4 + len);
+                    .extend(base..base + storage_len);
                 self.define_public_symbol(
                     name,
                     base,
@@ -557,10 +606,11 @@ impl Resolver {
                         name: name.clone(),
                         base,
                         len,
+                        value_type,
                     },
                 );
-                let init = self.resolve_array_init(init.as_ref(), len)?;
-                Ok(ResolvedStmt::LetArray { base, len, init })
+                let init = self.resolve_array_init(init.as_ref(), len, value_type)?;
+                Ok(ResolvedStmt::LetArray { layout, init })
             }
             Stmt::Assign {
                 name,
@@ -590,13 +640,25 @@ impl Resolver {
                 expr,
                 ..
             } => {
-                let (base, len) = self.lookup_array(name, *name_span)?;
-                self.check_const_index(index, len)?;
+                let layout = self.lookup_array(name, *name_span)?;
+                self.check_const_index(index, layout.len)?;
+                let index = self.resolve_expr(index)?;
+                self.require_byte(&index, *name_span, "array indexing")?;
+                let expr = self.resolve_expr(expr)?;
+                if !can_assign(layout.value_type, expr.value_type()) {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "cannot assign {:?} expression to {:?} array element",
+                            expr.value_type(),
+                            layout.value_type
+                        ),
+                        *name_span,
+                    ));
+                }
                 Ok(ResolvedStmt::ArraySet {
-                    base,
-                    len,
-                    index: self.resolve_expr(index)?,
-                    expr: self.resolve_expr(expr)?,
+                    layout,
+                    index,
+                    expr,
                 })
             }
             Stmt::Put(expr, span) => {
@@ -644,13 +706,11 @@ impl Resolver {
                 index,
                 ..
             } => {
-                let (base, len) = self.lookup_array(name, *name_span)?;
-                self.check_const_index(index, len)?;
-                Ok(ResolvedStmt::ReadArray {
-                    base,
-                    len,
-                    index: self.resolve_expr(index)?,
-                })
+                let layout = self.lookup_array(name, *name_span)?;
+                self.check_const_index(index, layout.len)?;
+                let index = self.resolve_expr(index)?;
+                self.require_byte(&index, *name_span, "array indexing")?;
+                Ok(ResolvedStmt::ReadArray { layout, index })
             }
             Stmt::Call {
                 name,
@@ -789,12 +849,25 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) -> Result<ResolvedExpr, Diagnostic> {
         match expr {
             Expr::Byte(value, _) => Ok(ResolvedExpr::Byte(*value)),
-            Expr::Int(value, _) => Ok(ResolvedExpr::Int(*value)),
+            Expr::Int(value, kind, span) => {
+                if *kind == IntLiteralKind::Decimal && *value > i32::MAX as u32 {
+                    return Err(Diagnostic::new(
+                        "positive decimal integer literal exceeds signed 32-bit range",
+                        *span,
+                    ));
+                }
+                Ok(ResolvedExpr::Int(*value))
+            }
             Expr::Var(name, span) => {
                 match self.lookup_symbol(name, *span, "use of undeclared variable")? {
-                    Symbol::Const { value, .. } => Ok(ResolvedExpr::Byte(value)),
+                    Symbol::Const {
+                        value, value_type, ..
+                    } => Ok(match value_type {
+                        ValueType::Byte => ResolvedExpr::Byte(value as u8),
+                        ValueType::Int => ResolvedExpr::Int(value),
+                    }),
                     Symbol::Scalar(layout) => Ok(ResolvedExpr::Var(layout)),
-                    Symbol::Array { .. } => {
+                    Symbol::Array(_) => {
                         Err(Diagnostic::new(format!("`{name}` is an array"), *span))
                     }
                 }
@@ -805,12 +878,13 @@ impl Resolver {
                 index,
                 ..
             } => {
-                let (base, len) = self.lookup_array(name, *name_span)?;
-                self.check_const_index(index, len)?;
+                let layout = self.lookup_array(name, *name_span)?;
+                self.check_const_index(index, layout.len)?;
+                let index = self.resolve_expr(index)?;
+                self.require_byte(&index, *name_span, "array indexing")?;
                 Ok(ResolvedExpr::ArrayGet {
-                    base,
-                    len,
-                    index: Box::new(self.resolve_expr(index)?),
+                    layout,
+                    index: Box::new(index),
                 })
             }
             Expr::Call {
@@ -838,6 +912,11 @@ impl Resolver {
                 })
             }
             Expr::Unary { op, expr, span } => {
+                if *op == UnOp::Neg
+                    && let Expr::Int(value, IntLiteralKind::Decimal, _) = expr.as_ref()
+                {
+                    return Ok(ResolvedExpr::Int(0u32.wrapping_sub(*value)));
+                }
                 let expr = self.resolve_expr(expr)?;
                 if *op == UnOp::Neg {
                     match expr {
@@ -874,34 +953,6 @@ impl Resolver {
                 let right = self.resolve_expr(right)?;
                 let has_int =
                     left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
-                if has_int
-                    && !matches!(
-                        op,
-                        BinOp::Add
-                            | BinOp::Sub
-                            | BinOp::Mul
-                            | BinOp::Div
-                            | BinOp::Mod
-                            | BinOp::Eq
-                            | BinOp::Ne
-                            | BinOp::Lt
-                            | BinOp::Le
-                            | BinOp::Gt
-                            | BinOp::Ge
-                            | BinOp::BitAnd
-                            | BinOp::BitOr
-                            | BinOp::BitXor
-                            | BinOp::Shl
-                            | BinOp::Shr
-                            | BinOp::And
-                            | BinOp::Or
-                    )
-                {
-                    return Err(Diagnostic::new(
-                        "this int binary operation is not implemented yet",
-                        expr.span(),
-                    ));
-                }
                 if has_int
                     && matches!(op, BinOp::Shl | BinOp::Shr)
                     && right.value_type() != ValueType::Byte
@@ -980,29 +1031,57 @@ impl Resolver {
             }
             ArrayLen::Explicit(expr) => {
                 let len = self.eval_const_expr(expr)?;
-                if len == 0 {
+                if len.value == 0 {
                     Err(Diagnostic::new(
                         "array length must be greater than zero",
                         expr.span(),
                     ))
+                } else if len.value > u32::from(u8::MAX) {
+                    Err(Diagnostic::new(
+                        "array length exceeds the byte limit of 255",
+                        expr.span(),
+                    ))
                 } else {
-                    Ok(usize::from(len))
+                    Ok(len.value as usize)
                 }
             }
         }
     }
 
+    fn infer_array_type(&mut self, init: Option<&ArrayInit>) -> Result<ValueType, Diagnostic> {
+        match init {
+            Some(ArrayInit::Bytes(..)) => Ok(ValueType::Byte),
+            Some(ArrayInit::Items(items)) => {
+                let mut value_type = ValueType::Byte;
+                for item in items {
+                    if self.resolve_expr(item)?.value_type() == ValueType::Int {
+                        value_type = ValueType::Int;
+                    }
+                }
+                Ok(value_type)
+            }
+            None => Ok(ValueType::Byte),
+        }
+    }
+
     fn resolve_array_init(
-        &self,
+        &mut self,
         init: Option<&ArrayInit>,
         len: usize,
-    ) -> Result<Vec<u8>, Diagnostic> {
+        value_type: ValueType,
+    ) -> Result<Vec<u32>, Diagnostic> {
         let Some(init) = init else {
             return Ok(Vec::new());
         };
 
         match init {
             ArrayInit::Bytes(bytes, span) => {
+                if value_type != ValueType::Byte {
+                    return Err(Diagnostic::new(
+                        "string initializer requires a byte array",
+                        *span,
+                    ));
+                }
                 if bytes.len() != len {
                     return Err(Diagnostic::new(
                         format!(
@@ -1012,7 +1091,7 @@ impl Resolver {
                         *span,
                     ));
                 }
-                Ok(bytes.clone())
+                Ok(bytes.iter().copied().map(u32::from).collect())
             }
             ArrayInit::Items(items) => {
                 if items.len() != len {
@@ -1031,9 +1110,27 @@ impl Resolver {
                 items
                     .iter()
                     .map(|expr| {
-                        self.eval_const_expr(expr).map_err(|_| {
+                        let resolved = self.resolve_expr(expr)?;
+                        if !can_assign(value_type, resolved.value_type()) {
+                            return Err(Diagnostic::new(
+                                format!(
+                                    "cannot initialize {:?} array with {:?} expression",
+                                    value_type,
+                                    resolved.value_type()
+                                ),
+                                expr.span(),
+                            ));
+                        }
+                        eval_resolved_const(&resolved).ok_or_else(|| {
                             Diagnostic::new(
-                                "array initializer elements must be constant bytes",
+                                match value_type {
+                                    ValueType::Byte => {
+                                        "array initializer elements must be constant bytes"
+                                    }
+                                    ValueType::Int => {
+                                        "array initializer elements must be constant scalar expressions"
+                                    }
+                                },
                                 expr.span(),
                             )
                         })
@@ -1045,9 +1142,12 @@ impl Resolver {
 
     fn check_const_index(&self, index: &Expr, len: usize) -> Result<(), Diagnostic> {
         if let Ok(value) = self.eval_const_expr(index) {
-            if usize::from(value) >= len {
+            if value.value as usize >= len {
                 return Err(Diagnostic::new(
-                    format!("array index {value} is out of bounds for length {len}"),
+                    format!(
+                        "array index {} is out of bounds for length {len}",
+                        value.value
+                    ),
                     index.span(),
                 ));
             }
@@ -1055,24 +1155,37 @@ impl Resolver {
         Ok(())
     }
 
-    fn eval_const_expr(&self, expr: &Expr) -> Result<u8, Diagnostic> {
+    fn eval_const_expr(&self, expr: &Expr) -> Result<ConstValue, Diagnostic> {
         match expr {
-            Expr::Byte(value, _) => Ok(*value),
-            Expr::Int(_, span) => Err(Diagnostic::new(
-                "int constants are not implemented yet",
-                *span,
-            )),
+            Expr::Byte(value, _) => Ok(ConstValue {
+                value: u32::from(*value),
+                value_type: ValueType::Byte,
+            }),
+            Expr::Int(value, kind, span) => {
+                if *kind == IntLiteralKind::Decimal && *value > i32::MAX as u32 {
+                    return Err(Diagnostic::new(
+                        "positive decimal integer literal exceeds signed 32-bit range",
+                        *span,
+                    ));
+                }
+                Ok(ConstValue {
+                    value: *value,
+                    value_type: ValueType::Int,
+                })
+            }
             Expr::Var(name, span) => match self.lookup_symbol(
                 name,
                 *span,
                 "constant expression references undeclared or forward name",
             )? {
-                Symbol::Const { value, .. } => Ok(value),
+                Symbol::Const {
+                    value, value_type, ..
+                } => Ok(ConstValue { value, value_type }),
                 Symbol::Scalar(_) => Err(Diagnostic::new(
                     format!("constant expression cannot use variable `{name}`"),
                     *span,
                 )),
-                Symbol::Array { .. } => Err(Diagnostic::new(
+                Symbol::Array(_) => Err(Diagnostic::new(
                     format!("constant expression cannot use array `{name}`"),
                     *span,
                 )),
@@ -1085,26 +1198,73 @@ impl Resolver {
                 "constant expression cannot call a function",
                 *span,
             )),
-            Expr::Unary {
-                op: UnOp::Neg,
-                span,
-                ..
-            } => Err(Diagnostic::new(
-                "negative int constants are not implemented yet",
-                *span,
-            )),
-            Expr::Unary { op, expr, .. } => Ok(eval_const_unary(*op, self.eval_const_expr(expr)?)),
+            Expr::Unary { op, expr, .. } => {
+                if *op == UnOp::Neg
+                    && let Expr::Int(value, IntLiteralKind::Decimal, _) = expr.as_ref()
+                {
+                    return Ok(ConstValue {
+                        value: 0u32.wrapping_sub(*value),
+                        value_type: ValueType::Int,
+                    });
+                }
+                let value = self.eval_const_expr(expr)?;
+                let value_type = match op {
+                    UnOp::Not => ValueType::Byte,
+                    UnOp::Neg => ValueType::Int,
+                    UnOp::BitNot => value.value_type,
+                };
+                let raw = match (op, value.value_type) {
+                    (UnOp::Not, _) => u32::from(value.value == 0),
+                    (UnOp::Neg, _) => 0u32.wrapping_sub(value.value),
+                    (UnOp::BitNot, ValueType::Byte) => u32::from(!(value.value as u8)),
+                    (UnOp::BitNot, ValueType::Int) => !value.value,
+                };
+                Ok(ConstValue {
+                    value: raw,
+                    value_type,
+                })
+            }
             Expr::Binary {
                 left, op, right, ..
-            } => Ok(eval_const_binary(
-                self.eval_const_expr(left)?,
-                *op,
-                self.eval_const_expr(right)?,
-            )),
-            Expr::Cast { span, .. } => Err(Diagnostic::new(
-                "integer casts are not implemented yet",
-                *span,
-            )),
+            } => {
+                let left = self.eval_const_expr(left)?;
+                let right = self.eval_const_expr(right)?;
+                let int_op =
+                    left.value_type == ValueType::Int || right.value_type == ValueType::Int;
+                let value = if int_op {
+                    eval_int_const_binary(left.value, *op, right.value)
+                } else {
+                    u32::from(eval_const_binary(left.value as u8, *op, right.value as u8))
+                };
+                let value_type = if matches!(
+                    op,
+                    BinOp::Eq
+                        | BinOp::Ne
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge
+                        | BinOp::Or
+                        | BinOp::And
+                ) {
+                    ValueType::Byte
+                } else if int_op {
+                    ValueType::Int
+                } else {
+                    ValueType::Byte
+                };
+                Ok(ConstValue { value, value_type })
+            }
+            Expr::Cast { expr, target, .. } => {
+                let value = self.eval_const_expr(expr)?;
+                Ok(ConstValue {
+                    value: match target {
+                        ValueType::Byte => value.value & 0xff,
+                        ValueType::Int => value.value,
+                    },
+                    value_type: *target,
+                })
+            }
         }
     }
 
@@ -1136,7 +1296,7 @@ impl Resolver {
         match self.lookup_symbol(name, span, prefix)? {
             Symbol::Scalar(layout) => Ok(layout),
             Symbol::Const { .. } => Err(Diagnostic::new(format!("`{name}` is a constant"), span)),
-            Symbol::Array { .. } => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
+            Symbol::Array(_) => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
         }
     }
 
@@ -1150,15 +1310,15 @@ impl Resolver {
             Ok(())
         } else {
             Err(Diagnostic::new(
-                format!("{context} for int is not implemented yet"),
+                format!("{context} requires a byte expression"),
                 span,
             ))
         }
     }
 
-    fn lookup_array(&self, name: &str, span: Span) -> Result<(usize, usize), Diagnostic> {
+    fn lookup_array(&self, name: &str, span: Span) -> Result<ArrayLayout, Diagnostic> {
         match self.lookup_symbol(name, span, "use of undeclared array")? {
-            Symbol::Array { base, len } => Ok((base, len)),
+            Symbol::Array(layout) => Ok(layout),
             Symbol::Const { .. } | Symbol::Scalar(_) => {
                 Err(Diagnostic::new(format!("`{name}` is not an array"), span))
             }
@@ -1243,16 +1403,93 @@ impl Resolver {
     }
 }
 
-fn eval_const_unary(op: UnOp, value: u8) -> u8 {
-    match op {
-        UnOp::Not => u8::from(value == 0),
-        UnOp::BitNot => !value,
-        UnOp::Neg => 0u8.wrapping_sub(value),
+fn can_assign(target: ValueType, source: ValueType) -> bool {
+    target == source || (target == ValueType::Int && source == ValueType::Byte)
+}
+
+fn eval_resolved_const(expr: &ResolvedExpr) -> Option<u32> {
+    match expr {
+        ResolvedExpr::Byte(value) => Some(u32::from(*value)),
+        ResolvedExpr::Int(value) => Some(*value),
+        ResolvedExpr::Cast { expr, target } => {
+            let value = eval_resolved_const(expr)?;
+            Some(match target {
+                ValueType::Byte => value & 0xff,
+                ValueType::Int => value,
+            })
+        }
+        ResolvedExpr::Unary { op, expr } => {
+            let value = eval_resolved_const(expr)?;
+            Some(match op {
+                UnOp::Neg => 0u32.wrapping_sub(value),
+                UnOp::BitNot => match expr.value_type() {
+                    ValueType::Byte => u32::from(!(value as u8)),
+                    ValueType::Int => !value,
+                },
+                UnOp::Not => u32::from(value == 0),
+            })
+        }
+        ResolvedExpr::Binary { left, op, right } => {
+            let left_value = eval_resolved_const(left)?;
+            let right_value = eval_resolved_const(right)?;
+            let int_op =
+                left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
+            let value = if int_op {
+                eval_int_const_binary(left_value, *op, right_value)
+            } else {
+                u32::from(eval_const_binary(left_value as u8, *op, right_value as u8))
+            };
+            Some(value)
+        }
+        ResolvedExpr::Var(_) | ResolvedExpr::ArrayGet { .. } | ResolvedExpr::Call { .. } => None,
     }
 }
 
-fn can_assign(target: ValueType, source: ValueType) -> bool {
-    target == source || (target == ValueType::Int && source == ValueType::Byte)
+fn eval_int_const_binary(left: u32, op: BinOp, right: u32) -> u32 {
+    match op {
+        BinOp::Or => u32::from(left != 0 || right != 0),
+        BinOp::And => u32::from(left != 0 && right != 0),
+        BinOp::BitOr => left | right,
+        BinOp::BitXor => left ^ right,
+        BinOp::BitAnd => left & right,
+        BinOp::Shl => {
+            if right >= 32 {
+                0
+            } else {
+                left.wrapping_shl(right)
+            }
+        }
+        BinOp::Shr => {
+            if right >= 32 {
+                if (left as i32) < 0 { u32::MAX } else { 0 }
+            } else {
+                ((left as i32) >> right) as u32
+            }
+        }
+        BinOp::Add => left.wrapping_add(right),
+        BinOp::Sub => left.wrapping_sub(right),
+        BinOp::Mul => left.wrapping_mul(right),
+        BinOp::Div => {
+            if right == 0 {
+                0
+            } else {
+                (left as i32).wrapping_div(right as i32) as u32
+            }
+        }
+        BinOp::Mod => {
+            if right == 0 {
+                left
+            } else {
+                (left as i32).wrapping_rem(right as i32) as u32
+            }
+        }
+        BinOp::Eq => u32::from(left == right),
+        BinOp::Ne => u32::from(left != right),
+        BinOp::Lt => u32::from((left as i32) < right as i32),
+        BinOp::Le => u32::from((left as i32) <= right as i32),
+        BinOp::Gt => u32::from((left as i32) > right as i32),
+        BinOp::Ge => u32::from((left as i32) >= right as i32),
+    }
 }
 
 fn return_type_name(return_type: ReturnType) -> &'static str {

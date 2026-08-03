@@ -103,3 +103,10 @@ fn read_signed_decimal_ints() {
         b"-2147483648\n123456789"
     );
 }
+
+#[test]
+fn read_signed_decimal_int_array_elements() {
+    let src = "let values: int[2]; let index: byte = 1; read values[index]; print values[1];";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, b"-7654321\n"), b"-7654321");
+}

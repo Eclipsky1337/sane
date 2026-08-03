@@ -1,5 +1,5 @@
 use crate::ast::ReturnType;
-use crate::sema::{ResolvedExpr, ResolvedProgram, ResolvedStmt, ValueLayout};
+use crate::sema::{ArrayLayout, ResolvedExpr, ResolvedProgram, ResolvedStmt, ValueLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
@@ -199,17 +199,15 @@ pub enum Op {
         init: Option<ResolvedExpr>,
     },
     LetArray {
-        base: usize,
-        len: usize,
-        init: Vec<u8>,
+        layout: ArrayLayout,
+        init: Vec<u32>,
     },
     Assign {
         layout: ValueLayout,
         expr: ResolvedExpr,
     },
     ArraySet {
-        base: usize,
-        len: usize,
+        layout: ArrayLayout,
         index: ResolvedExpr,
         expr: ResolvedExpr,
     },
@@ -219,8 +217,7 @@ pub enum Op {
     Println(ResolvedExpr),
     Read(ValueLayout),
     ReadArray {
-        base: usize,
-        len: usize,
+        layout: ArrayLayout,
         index: ResolvedExpr,
     },
     StoreReturn(ValueLayout),
@@ -345,12 +342,11 @@ impl Builder {
                 );
                 current
             }
-            ResolvedStmt::LetArray { base, len, init } => {
+            ResolvedStmt::LetArray { layout, init } => {
                 self.push_op(
                     current,
                     Op::LetArray {
-                        base: *base,
-                        len: *len,
+                        layout: *layout,
                         init: init.clone(),
                     },
                 );
@@ -368,8 +364,7 @@ impl Builder {
                 current
             }
             ResolvedStmt::ArraySet {
-                base,
-                len,
+                layout,
                 index,
                 expr,
             } => {
@@ -378,8 +373,7 @@ impl Builder {
                 self.push_op(
                     current,
                     Op::ArraySet {
-                        base: *base,
-                        len: *len,
+                        layout: *layout,
                         index,
                         expr,
                     },
@@ -409,13 +403,12 @@ impl Builder {
                 self.push_op(current, Op::Read(*layout));
                 current
             }
-            ResolvedStmt::ReadArray { base, len, index } => {
+            ResolvedStmt::ReadArray { layout, index } => {
                 let (current, index) = self.lower_expr_calls(current, index);
                 self.push_op(
                     current,
                     Op::ReadArray {
-                        base: *base,
-                        len: *len,
+                        layout: *layout,
                         index,
                     },
                 );
@@ -592,13 +585,12 @@ impl Builder {
             ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => {
                 (current, expr.clone())
             }
-            ResolvedExpr::ArrayGet { base, len, index } => {
+            ResolvedExpr::ArrayGet { layout, index } => {
                 let (current, index) = self.lower_expr_calls(current, index);
                 (
                     current,
                     ResolvedExpr::ArrayGet {
-                        base: *base,
-                        len: *len,
+                        layout: *layout,
                         index: Box::new(index),
                     },
                 )

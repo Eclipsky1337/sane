@@ -1,8 +1,8 @@
 use crate::ast::{BinOp, ReturnType, UnOp, ValueType};
 use crate::ir::{BlockId, Op, Terminator};
 use crate::sema::{
-    MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, ValueLayout,
-    WORK_CELL_COUNT,
+    ArrayLayout, MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt,
+    ValueLayout, WORK_CELL_COUNT,
 };
 
 const T0: usize = 0;
@@ -124,10 +124,9 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
             },
             out,
         ),
-        Op::LetArray { base, len, init } => emit_basic_stmt(
+        Op::LetArray { layout, init } => emit_basic_stmt(
             &Stmt::LetArray {
-                base: *base,
-                len: *len,
+                layout: *layout,
                 init: init.clone(),
             },
             out,
@@ -140,14 +139,12 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
             out,
         ),
         Op::ArraySet {
-            base,
-            len,
+            layout,
             index,
             expr,
         } => emit_basic_stmt(
             &Stmt::ArraySet {
-                base: *base,
-                len: *len,
+                layout: *layout,
                 index: index.clone(),
                 expr: expr.clone(),
             },
@@ -158,10 +155,9 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
         Op::Print(expr) => emit_basic_stmt(&Stmt::Print(expr.clone()), out),
         Op::Println(expr) => emit_basic_stmt(&Stmt::Println(expr.clone()), out),
         Op::Read(cell) => emit_basic_stmt(&Stmt::Read(*cell), out),
-        Op::ReadArray { base, len, index } => emit_basic_stmt(
+        Op::ReadArray { layout, index } => emit_basic_stmt(
             &Stmt::ReadArray {
-                base: *base,
-                len: *len,
+                layout: *layout,
                 index: index.clone(),
             },
             out,
@@ -379,23 +375,30 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
                 }
             }
         }
-        Stmt::LetArray { base, len, init } => {
-            for cell in *base..*base + 4 + *len {
+        Stmt::LetArray { layout, init } => {
+            for cell in layout.base..layout.base + layout.storage_len() {
                 out.clear(cell);
             }
             for (offset, value) in init.iter().copied().enumerate() {
-                out.set_const(*base + 4 + offset, value);
+                let element = layout.element(offset);
+                match layout.value_type {
+                    ValueType::Byte => out.set_const(element.base, value as u8),
+                    ValueType::Int => {
+                        for (byte_offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                            out.set_const(element.base + byte_offset, byte);
+                        }
+                    }
+                }
             }
         }
         Stmt::Assign { layout, expr } => {
             emit_value_to(expr, *layout, out)?;
         }
         Stmt::ArraySet {
-            base,
-            len,
+            layout,
             index,
             expr,
-        } => emit_array_set(*base, *len, index, expr, out)?,
+        } => emit_array_set(*layout, index, expr, out)?,
         Stmt::Put(expr) => {
             emit_expr_to(expr, T0, out, &[T0])?;
             out.put(T0);
@@ -412,7 +415,7 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
             ValueType::Byte => out.read(layout.base),
             ValueType::Int => emit_int_read(*layout, out)?,
         },
-        Stmt::ReadArray { base, len, index } => emit_array_read(*base, *len, index, out)?,
+        Stmt::ReadArray { layout, index } => emit_array_read(*layout, index, out)?,
         Stmt::Call { .. } | Stmt::Return(_) => {
             return Err(
                 "internal error: function statement reached structured backend".to_string(),
@@ -782,8 +785,8 @@ fn emit_expr_to(
                 out.copy_add(src, dst, tmp);
             }
         }
-        Expr::ArrayGet { base, len, index } => {
-            emit_array_get(*base, *len, index, dst, out, reserved)?;
+        Expr::ArrayGet { layout, index } => {
+            emit_array_get_byte(*layout, index, dst, out, reserved)?;
         }
         Expr::Call { .. } => {
             return Err(
@@ -889,16 +892,17 @@ fn emit_expr_to(
     Ok(())
 }
 
-fn emit_array_get(
-    base: usize,
-    len: usize,
+fn emit_array_get_byte(
+    layout: ArrayLayout,
     index: &Expr,
     dst: usize,
     out: &mut BfOut,
     reserved: &[usize],
 ) -> Result<(), String> {
+    debug_assert_eq!(layout.value_type, ValueType::Byte);
+    let base = layout.base;
     if let Some(index) = const_eval(index) {
-        let cell = array_elem(base, len, usize::from(index))?;
+        let cell = array_elem(layout, usize::from(index))?.base;
         if cell != dst {
             let tmp = alloc_temp(reserved)?;
             out.clear(dst);
@@ -917,18 +921,21 @@ fn emit_array_get(
 }
 
 fn emit_array_set(
-    base: usize,
-    len: usize,
+    layout: ArrayLayout,
     index: &Expr,
     expr: &Expr,
     out: &mut BfOut,
 ) -> Result<(), String> {
     if let Some(index) = const_eval(index) {
-        let cell = array_elem(base, len, usize::from(index))?;
-        emit_expr_to(expr, cell, out, &[cell])?;
+        emit_value_to(expr, array_elem(layout, usize::from(index))?, out)?;
         return Ok(());
     }
 
+    if layout.value_type == ValueType::Int {
+        return emit_int_array_set_dynamic(layout, index, expr, out);
+    }
+
+    let base = layout.base;
     emit_expr_to(expr, T0, out, &[T0, base, base + 1, base + 2, base + 3])?;
     out.clear(base + 3);
     out.move_add(T0, base + 3);
@@ -937,13 +944,32 @@ fn emit_array_set(
     Ok(())
 }
 
-fn emit_array_read(base: usize, len: usize, index: &Expr, out: &mut BfOut) -> Result<(), String> {
+fn emit_array_read(layout: ArrayLayout, index: &Expr, out: &mut BfOut) -> Result<(), String> {
     if let Some(index) = const_eval(index) {
-        let cell = array_elem(base, len, usize::from(index))?;
-        out.read(cell);
+        let element = array_elem(layout, usize::from(index))?;
+        match layout.value_type {
+            ValueType::Byte => out.read(element.base),
+            ValueType::Int => emit_int_read(element, out)?,
+        }
         return Ok(());
     }
 
+    if layout.value_type == ValueType::Int {
+        let value_base = out.alloc_control_cell();
+        for _ in 1..4 {
+            out.alloc_control_cell();
+        }
+        let value = ValueLayout {
+            base: value_base,
+            value_type: ValueType::Int,
+        };
+        emit_int_read(value, out)?;
+        emit_int_array_set_dynamic(layout, index, &Expr::Var(value), out)?;
+        out.free_control_cells(4);
+        return Ok(());
+    }
+
+    let base = layout.base;
     emit_array_index(index, base + 1, out, &[base, base + 1, base + 2, base + 3])?;
     out.read(base + 3);
     out.tritonio_array_set(base);
@@ -962,14 +988,81 @@ fn emit_array_index(
     Ok(())
 }
 
-fn array_elem(base: usize, len: usize, index: usize) -> Result<usize, String> {
-    if index < len {
-        Ok(base + 4 + index)
+fn array_elem(layout: ArrayLayout, index: usize) -> Result<ValueLayout, String> {
+    if index < layout.len {
+        Ok(layout.element(index))
     } else {
         Err(format!(
-            "internal error: array index {index} out of bounds for length {len}"
+            "internal error: array index {index} out of bounds for length {}",
+            layout.len
         ))
     }
+}
+
+fn emit_int_array_get_dynamic(
+    layout: ArrayLayout,
+    index: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let index_cell = out.alloc_control_cell();
+    let flag = out.alloc_control_cell();
+    let expected = out.alloc_control_cell();
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
+    for cell in dst.cells() {
+        out.clear(cell);
+    }
+    for element_index in 0..layout.len {
+        out.clear(flag);
+        out.copy_add(index_cell, flag, T0);
+        out.clear(expected);
+        out.set_const(expected, element_index as u8);
+        out.eq(flag, expected);
+        out.goto(flag);
+        out.code.push('[');
+        out.clear(flag);
+        copy_int_layout(layout.element(element_index), dst, out);
+        out.goto(flag);
+        out.code.push(']');
+    }
+    out.free_control_cells(3);
+    Ok(())
+}
+
+fn emit_int_array_set_dynamic(
+    layout: ArrayLayout,
+    index: &Expr,
+    expr: &Expr,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let value_base = out.alloc_control_cell();
+    for _ in 1..4 {
+        out.alloc_control_cell();
+    }
+    let index_cell = out.alloc_control_cell();
+    let flag = out.alloc_control_cell();
+    let expected = out.alloc_control_cell();
+    let value = ValueLayout {
+        base: value_base,
+        value_type: ValueType::Int,
+    };
+    emit_int_to(expr, value, out)?;
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
+    for element_index in 0..layout.len {
+        out.clear(flag);
+        out.copy_add(index_cell, flag, T0);
+        out.clear(expected);
+        out.set_const(expected, element_index as u8);
+        out.eq(flag, expected);
+        out.goto(flag);
+        out.code.push('[');
+        out.clear(flag);
+        copy_int_layout(value, layout.element(element_index), out);
+        out.goto(flag);
+        out.code.push(']');
+    }
+    out.free_control_cells(7);
+    Ok(())
 }
 
 fn emit_const_binary_to(
@@ -1138,6 +1231,13 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
                     out.clear(dst.base + offset);
                     out.copy_add(src.base + offset, dst.base + offset, T0);
                 }
+            }
+        }
+        Expr::ArrayGet { layout, index } => {
+            if let Some(index) = const_eval(index) {
+                copy_int_layout(array_elem(*layout, usize::from(index))?, dst, out);
+            } else {
+                emit_int_array_get_dynamic(*layout, index, dst, out)?;
             }
         }
         Expr::Cast { expr, target } if *target == ValueType::Int => {

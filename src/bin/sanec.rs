@@ -143,12 +143,21 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
             sane::sema::SymbolInfo::Scalar { name, cell } => {
                 lines.push(format!("{name} CELL {cell}"));
             }
-            sane::sema::SymbolInfo::Array { name, base, len } => {
-                let first = base + 4;
+            sane::sema::SymbolInfo::Array {
+                name,
+                base,
+                len,
+                value_type,
+            } => {
+                let first = match value_type {
+                    sane::ast::ValueType::Byte => base + 4,
+                    sane::ast::ValueType::Int => *base,
+                };
+                let width = value_type.cell_width();
                 let last = if *len == 0 {
                     first - 1
                 } else {
-                    first + len - 1
+                    first + len * width - 1
                 };
                 lines.push(format!(
                     "{name} ARRAY BASE {base} LEN {len} DATA CELLS {first} TO {last}"

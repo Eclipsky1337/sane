@@ -61,21 +61,23 @@ put x; // A
 
 ## Constants
 
-Constants are compile-time byte values and do not allocate tape cells:
+Constants are compile-time byte or int values and do not allocate tape cells:
 
 ```sane
 const BLOCK_SIZE = 16;
 const NEWLINE = '\n';
 const MASK = (1 << 4) - 1;
+const WIDE_MASK = 0xffff0000;
 
 let state: byte[BLOCK_SIZE];
 put NEWLINE;
 ```
 
 Constants are lexically scoped and may use literals, earlier visible
-constants, unary operators, and binary operators. Their arithmetic uses the
-same wrapping byte semantics as runtime expressions. Constants may appear in
-ordinary expressions, explicit array lengths, indexes, and array initializers.
+constants, casts, unary operators, and binary operators. Their arithmetic uses
+the same typed wrapping semantics as runtime expressions. Constants may appear
+in ordinary expressions, explicit array lengths, indexes, and array
+initializers.
 
 Forward references, cyclic or self references, runtime variables, function
 calls, and array accesses are not constant expressions. Explicit array lengths
@@ -84,12 +86,13 @@ when their byte element type is established by an empty string initializer.
 
 ## Arrays
 
-Arrays are fixed-size byte arrays:
+Arrays are fixed-size and contain either byte or int elements:
 
 ```sane
 let data: byte[4];
 let key: byte[4] = [1, 2, 3, 4];
 let text: byte[6] = "hello\n";
+let totals: int[3] = [1, 65536, -2];
 ```
 
 When an initializer is present, the array length may be inferred:
@@ -97,12 +100,15 @@ When an initializer is present, the array length may be inferred:
 ```sane
 let key = [1, 2, 3, 4];
 let text = "hello\n";
+let totals = [1, 65536, -2];
 ```
 
 List length is the number of initializer elements. String length is the number
-of decoded ASCII bytes. An empty list is rejected because its element type
-cannot be inferred; an empty string creates a zero-length byte array. Explicit
-syntax remains required for an uninitialized array.
+of decoded ASCII bytes. List initializers infer `int[]` when any element is an
+int; byte elements widen to int elements. An empty list is rejected because its
+element type cannot be inferred; an empty string creates a zero-length byte
+array. Explicit syntax remains required for an uninitialized array. Int
+elements occupy four consecutive little-endian cells.
 
 An initializer must contain exactly the declared number of bytes. String
 initializers are ASCII-only and do not receive an implicit trailing `\0`.
@@ -374,7 +380,7 @@ Operator precedence, from tightest to loosest:
 | 11 | `||` |
 
 Logical and comparison operations produce `0` or `1`. Bitwise operations work
-on all eight bits of a byte.
+on all eight bits of a byte or all 32 bits of an int.
 
 Division by zero is defined:
 
@@ -385,8 +391,7 @@ x % 0 == x
 
 ## Current Limits
 
-- `int` arrays are not yet implemented.
-- Arrays contain bytes and have a compile-time length.
+- Arrays have a compile-time length and cannot mix byte and int elements.
 - Dynamic array indexes are not bounds checked.
 - Recursive function call graphs are rejected.
 - Source files are compiled independently; there are no modules.

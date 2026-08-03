@@ -1,7 +1,7 @@
 # 32-Bit Integer Design
 
-This document defines the planned `int` type before implementation begins.
-Function and PC debug-symbol work is paused while this feature is developed.
+This document defines the implemented `int` type and records its staged
+implementation. Function and PC debug-symbol work remains separately deferred.
 
 ## Representation
 
@@ -43,15 +43,15 @@ Scalar storage is represented by a layout containing a base cell and value
 type. Allocators reserve the complete width and scoped reuse must only reuse a
 region with a compatible width.
 
-PC runtime values will eventually use these widths:
+PC runtime values use these widths:
 
 - byte return value: one `rv` cell
 - int return value: four consecutive `rv` cells
 - byte spill: one cell
 - int spill: four consecutive cells
 
-The first implementation stages do not change array storage. A later stage
-will define `int[]` elements at four-cell strides.
+`int[]` elements use four-cell strides. Byte arrays retain their existing
+single-cell element layout.
 
 ## Operations
 

@@ -1,6 +1,6 @@
 use crate::ast::{
-    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Param, Program, ReturnType, Stmt, UnOp,
-    ValueType,
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, IntLiteralKind, Param, Program,
+    ReturnType, Stmt, UnOp, ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -122,12 +122,6 @@ impl Parser {
             None
         };
         if value_type.is_some() && self.match_kind(TokenKind::LBracket) {
-            if value_type != Some(ValueType::Byte) {
-                return Err(Diagnostic::new(
-                    "int arrays are not implemented yet",
-                    name_span,
-                ));
-            }
             let len_expr = self.parse_expr()?;
             self.expect(TokenKind::RBracket)?;
             let init = if self.match_kind(TokenKind::Eq) {
@@ -144,6 +138,7 @@ impl Parser {
             return Ok(Stmt::LetArray {
                 name,
                 name_span,
+                value_type,
                 len: ArrayLen::Explicit(len_expr),
                 init,
                 span: start.join(end),
@@ -169,6 +164,7 @@ impl Parser {
                 return Ok(Stmt::LetArray {
                     name,
                     name_span,
+                    value_type: None,
                     len: ArrayLen::Inferred(len),
                     init: Some(init),
                     span: start.join(end),
@@ -726,11 +722,25 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.advance_token().clone();
         match token.kind {
-            TokenKind::Number(n) => {
+            TokenKind::Number(n, decimal) => {
                 if let Ok(value) = u8::try_from(n) {
                     Ok(Expr::Byte(value, token.span))
                 } else {
-                    Ok(Expr::Int(n, token.span))
+                    if decimal && n > 2_147_483_648 {
+                        return Err(Diagnostic::new(
+                            "decimal integer literal exceeds signed 32-bit range",
+                            token.span,
+                        ));
+                    }
+                    Ok(Expr::Int(
+                        n,
+                        if decimal {
+                            IntLiteralKind::Decimal
+                        } else {
+                            IntLiteralKind::BitPattern
+                        },
+                        token.span,
+                    ))
                 }
             }
             TokenKind::True => Ok(Expr::Byte(1, token.span)),

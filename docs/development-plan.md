@@ -19,7 +19,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] superblocks and fallthrough
   - [x] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
-- [ ] Phase 4: 32-bit signed integers
+- [x] Phase 4: 32-bit signed integers
   - [x] representation and language design
   - [x] scalar type and storage layout
   - [x] `int` syntax and 32-bit literal lexing
@@ -29,7 +29,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] core arithmetic and comparisons
   - [x] signed decimal I/O
   - [x] function values and typed spills
-  - [ ] four-cell arrays and indexing
+  - [x] four-cell arrays and indexing
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES

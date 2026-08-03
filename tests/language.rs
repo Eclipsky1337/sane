@@ -32,7 +32,7 @@ fn int_declarations_literals_negation_and_casts_parse() {
         &program.stmts[0],
         Stmt::Let {
             value_type: Some(ValueType::Int),
-            init: Some(Expr::Int(0xffff_ffff, _)),
+            init: Some(Expr::Int(0xffff_ffff, _, _)),
             ..
         }
     ));
@@ -46,7 +46,7 @@ fn int_declarations_literals_negation_and_casts_parse() {
                 ..
             }),
             ..
-        } if matches!(expr.as_ref(), Expr::Int(2_147_483_648, _))
+        } if matches!(expr.as_ref(), Expr::Int(2_147_483_648, _, _))
     ));
     assert!(matches!(
         &program.stmts[2],
@@ -64,6 +64,14 @@ fn int_declarations_literals_negation_and_casts_parse() {
 #[test]
 fn int_frontend_reports_staged_lowering_and_literal_limits() {
     assert!(lexer::lex("let value = 4294967296;").is_err());
+    assert!(compile_source("let value = 2147483648;").is_err());
+    assert!(compile_source("let value = -2147483649;").is_err());
+
+    let bf = compile_source(
+        "let minimum: int = -2147483648; let bits: int = 0xffffffff; if minimum == 0x80000000 && bits == -1 { put 'A'; }",
+    )
+    .unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"A");
 }
 
 #[test]
@@ -236,6 +244,31 @@ fn int_function_types_reject_implicit_narrowing() {
 
     let err = compile_source("fn narrow() -> byte { return 300; }").unwrap_err();
     assert!(err.contains("cannot return int expression from byte function"));
+}
+
+#[test]
+fn int_arrays_use_four_cell_elements_and_dynamic_indexes() {
+    let src = r#"
+        let values: int[4] = [1, 65536, -2, 0x7fffffff];
+        if values[0] == 1 && values[1] == 65536 { put 'A'; }
+        values[2] = values[1] + 5;
+        let index: byte = 2;
+        if values[index] == 65541 { put 'B'; }
+        values[index + 1] = -2147483647;
+        if values[3] == -2147483647 { put 'C'; }
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABC");
+}
+
+#[test]
+fn inferred_int_arrays_and_element_types_are_checked() {
+    let src = "let values = [1, 300, -2]; if values[1] == 300 { put 'A'; }";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"A");
+
+    let err = compile_source("let values: byte[1] = [300];").unwrap_err();
+    assert!(err.contains("cannot initialize Byte array with Int expression"));
 }
 
 #[test]
