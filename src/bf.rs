@@ -17,6 +17,15 @@ pub fn compile(program: &ResolvedProgram) -> Result<String, String> {
 }
 
 pub fn compile_pc(program: &ResolvedProgram) -> Result<String, String> {
+    compile_pc_inner(program, false)
+}
+
+#[doc(hidden)]
+pub fn compile_pc_with_profiling(program: &ResolvedProgram) -> Result<String, String> {
+    compile_pc_inner(program, true)
+}
+
+fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result<String, String> {
     let ir = crate::ir::lower(program);
     if ir.blocks.len() > u8::MAX as usize + 1 {
         return Err("pc backend supports at most 256 basic blocks".to_string());
@@ -47,6 +56,9 @@ pub fn compile_pc(program: &ResolvedProgram) -> Result<String, String> {
 
     out.goto(rt.running);
     out.code.push('[');
+    if profile_dispatch {
+        out.code.push_str(crate::interpreter::DISPATCH_MARKER);
+    }
     out.clear(rt.dispatch_pc);
     out.copy_add(rt.pc, rt.dispatch_pc, T0);
 

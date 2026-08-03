@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 const TAPE_SIZE: usize = 30_000;
+pub const DISPATCH_MARKER: &str = "SANE PROFILE DISPATCH";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -12,6 +13,13 @@ pub enum Op {
     Clear,
     AddMul(Vec<(isize, i16)>),
     Loop(Vec<Op>),
+    Dispatch,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecutionStats {
+    pub executed_ops: u64,
+    pub dispatches: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,10 +30,7 @@ pub struct Program {
 impl Program {
     pub fn parse(src: &str) -> Result<Self, String> {
         let mut parser = Parser {
-            chars: src
-                .chars()
-                .filter(|ch| matches!(ch, '>' | '<' | '+' | '-' | '.' | ',' | '[' | ']'))
-                .collect(),
+            chars: parse_chars(src),
             pos: 0,
         };
         let ops = parser.parse_ops(false)?;
@@ -36,22 +41,67 @@ impl Program {
     }
 
     pub fn run<R: Read, W: Write>(&self, input: R, output: W) -> Result<(), String> {
+        self.run_with_stats(input, output).map(|_| ())
+    }
+
+    pub fn run_with_stats<R: Read, W: Write>(
+        &self,
+        input: R,
+        output: W,
+    ) -> Result<ExecutionStats, String> {
         let mut runtime = Runtime {
             tape: vec![0; TAPE_SIZE],
             ptr: 0,
             input,
             output,
+            stats: ExecutionStats::default(),
         };
-        runtime.run_ops(&self.ops)
+        runtime.run_ops(&self.ops)?;
+        Ok(runtime.stats)
     }
 
     pub fn ops(&self) -> &[Op] {
         &self.ops
     }
+
+    pub fn operation_count(&self) -> usize {
+        count_ops(&self.ops)
+    }
 }
 
 pub fn run_source<R: Read, W: Write>(src: &str, input: R, output: W) -> Result<(), String> {
     Program::parse(src)?.run(input, output)
+}
+
+fn parse_chars(src: &str) -> Vec<char> {
+    let mut chars = Vec::new();
+    let mut remaining = src;
+
+    while let Some(marker_start) = remaining.find(DISPATCH_MARKER) {
+        chars.extend(
+            remaining[..marker_start]
+                .chars()
+                .filter(|ch| matches!(ch, '>' | '<' | '+' | '-' | '.' | ',' | '[' | ']')),
+        );
+        chars.push('\0');
+        remaining = &remaining[marker_start + DISPATCH_MARKER.len()..];
+    }
+
+    chars.extend(
+        remaining
+            .chars()
+            .filter(|ch| matches!(ch, '>' | '<' | '+' | '-' | '.' | ',' | '[' | ']')),
+    );
+    chars
+}
+
+fn count_ops(ops: &[Op]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            Op::Loop(body) => 1 + count_ops(body),
+            _ => 1,
+        })
+        .sum()
 }
 
 struct Parser {
@@ -84,6 +134,10 @@ impl Parser {
                     return Ok(ops);
                 }
                 ']' => return Err(format!("unmatched `]` at instruction {}", self.pos)),
+                '\0' => {
+                    self.pos += 1;
+                    ops.push(Op::Dispatch);
+                }
                 _ => unreachable!("non-BF characters are filtered before parsing"),
             }
         }
@@ -197,11 +251,13 @@ struct Runtime<R, W> {
     ptr: usize,
     input: R,
     output: W,
+    stats: ExecutionStats,
 }
 
 impl<R: Read, W: Write> Runtime<R, W> {
     fn run_ops(&mut self, ops: &[Op]) -> Result<(), String> {
         for op in ops {
+            self.stats.executed_ops += 1;
             match op {
                 Op::Add(delta) => {
                     self.tape[self.ptr] = add_wrapping(self.tape[self.ptr], *delta);
@@ -239,6 +295,7 @@ impl<R: Read, W: Write> Runtime<R, W> {
                         self.run_ops(body)?;
                     }
                 }
+                Op::Dispatch => self.stats.dispatches += 1,
             }
         }
         Ok(())

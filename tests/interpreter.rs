@@ -1,4 +1,4 @@
-use sane::interpreter::{Op, Program, run_source};
+use sane::interpreter::{DISPATCH_MARKER, ExecutionStats, Op, Program, run_source};
 use std::io::{self, Write};
 
 #[test]
@@ -63,4 +63,20 @@ fn bf_optimizer_recognizes_add_mul_loop() {
 fn bf_interpreter_reports_unmatched_brackets() {
     assert!(Program::parse("[").is_err());
     assert!(Program::parse("]").is_err());
+}
+
+#[test]
+fn bf_interpreter_reports_deterministic_execution_stats() {
+    let source = format!("+[{DISPATCH_MARKER}-]");
+    let program = Program::parse(&source).unwrap();
+    let stats = program.run_with_stats(&[][..], Vec::new()).unwrap();
+
+    assert_eq!(program.operation_count(), 4);
+    assert_eq!(
+        stats,
+        ExecutionStats {
+            executed_ops: 4,
+            dispatches: 1,
+        }
+    );
 }

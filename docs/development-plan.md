@@ -15,7 +15,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [x] Release 1.2: version, documentation, validation, and tag
 - [ ] Phase 2: P1 PC measurement and optimization
   - [x] IR statistics and upper-bound regression tests
-  - [ ] reproducible benchmarks
+  - [x] reproducible benchmarks
   - [ ] superblocks and fallthrough
   - [ ] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
@@ -163,6 +163,30 @@ Generated BF instruction counts:
 | --- | ---: | ---: |
 | `toy_aes_round` | 496,755 | 554,894 |
 | `Collatz` | 65,074 | unavailable because it uses functions |
+
+### Reproducible Measurement Baseline
+
+Run the deterministic PC measurement harness with:
+
+```sh
+cargo bench --locked --bench pc_backend
+```
+
+The harness compiles and executes both reference programs, verifies their exact
+output, and prints a Markdown table. `Parsed ops` recursively counts optimized
+`sanei` operations. `Executed ops` counts optimized operations executed by the
+unprofiled program, providing a deterministic execution-work metric. A BF-safe
+no-op marker in a separately generated profiling build counts dispatcher-loop
+iterations without changing program output.
+
+| Program | Blocks | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Parsed ops | Dispatches | Executed ops |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `toy_aes_round` | 46 | 46 | 112 | 18 | 2 | 496,755 | 34,920 | 629 | 7,525,987 |
+| `Collatz` | 26 | 20 | 14 | 19 | 11 | 65,074 | 4,003 | 171 | 173,052 |
+
+`IR ops` counts every lowered `ir::Op`, including return-value transfer
+operations. This definition is slightly broader than the earlier ad hoc
+`Ordinary ops` measurement.
 
 Interpret "empty-op block" carefully: such a block may still perform a
 `Branch`, `Call`, or `Return`. Only an empty block with an unconditional jump is
@@ -459,4 +483,4 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 2 item 6: reproducible benchmarks.
+The next session should begin with Phase 2 item 7: superblocks and fallthrough.

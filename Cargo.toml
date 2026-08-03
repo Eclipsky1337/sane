@@ -12,3 +12,7 @@ path = "src/bin/sanec.rs"
 [[bin]]
 name = "sanei"
 path = "src/bin/sanei.rs"
+
+[[bench]]
+name = "pc_backend"
+harness = false

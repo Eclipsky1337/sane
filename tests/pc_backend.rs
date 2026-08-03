@@ -2,6 +2,7 @@ mod common;
 
 use std::fs;
 
+use sane::interpreter::Program as BfProgram;
 use sane::{bf, ir, lexer, parser, sema};
 
 use common::run_bf;
@@ -89,6 +90,18 @@ fn ir_stats_classify_control_flow_and_reachability() {
 fn pc_backend_runs_linear_programs() {
     let bf = compile_pc("let x = 'A'; put x; puts \"\\n\";");
     assert_eq!(run_bf(&bf, &[]), b"A\n");
+}
+
+#[test]
+fn profiled_pc_backend_counts_dispatches_without_changing_output() {
+    let program = resolve("put 'A';");
+    let bf = bf::compile_pc_with_profiling(&program).unwrap();
+    let parsed = BfProgram::parse(&bf).unwrap();
+    let mut output = Vec::new();
+    let stats = parsed.run_with_stats(&[][..], &mut output).unwrap();
+
+    assert_eq!(output, b"A");
+    assert_eq!(stats.dispatches, 1);
 }
 
 #[test]
