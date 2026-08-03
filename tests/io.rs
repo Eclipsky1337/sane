@@ -94,19 +94,10 @@ fn print_and_format_signed_decimal_ints() {
 }
 
 #[test]
-fn read_signed_decimal_ints() {
-    let src =
-        "let first: int; let second: int; read first; read second; println first; print second;";
-    let bf = compile_source(src).unwrap();
-    assert_eq!(
-        run_bf(&bf, b"-2147483648\n123456789\n"),
-        b"-2147483648\n123456789"
-    );
-}
+fn read_rejects_int_targets() {
+    let error = compile_source("let value: int; read value;").unwrap_err();
+    assert!(error.contains("read requires a byte target"));
 
-#[test]
-fn read_signed_decimal_int_array_elements() {
-    let src = "let values: int[2]; let index: byte = 1; read values[index]; print values[1];";
-    let bf = compile_source(src).unwrap();
-    assert_eq!(run_bf(&bf, b"-7654321\n"), b"-7654321");
+    let error = compile_source("let values: int[2]; read values[1];").unwrap_err();
+    assert!(error.contains("read requires a byte array element"));
 }

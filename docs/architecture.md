@@ -76,10 +76,10 @@ cell control_base+1        running flag
 cell control_base+2        dispatch pc copy
 cell control_base+3        block matched flag
 cell control_base+4        expected block id
-cell control_base+5        return value (rv)
-cell control_base+6        call depth
-cell control_base+7..+22   return-pc stack
-cell control_base+23..     control-flow guard cells
+cell control_base+5..+8    return value (up to four cells)
+cell control_base+9        call depth for wide-return programs
+following 16 cells         return-pc stack
+remaining cells            control-flow guard cells
 ```
 
 ### Temporaries
@@ -89,13 +89,15 @@ microcode may overwrite them.
 
 ### Source Storage
 
-Each scalar occupies one cell. Lexical-scope cells return to a free-list after
-the scope ends, allowing later non-overlapping variables to reuse storage.
+Byte scalars occupy one cell. Int and Q16.16 fixed scalars occupy four
+consecutive little-endian cells. Lexical-scope cells return to a free-list
+after the scope ends, allowing later non-overlapping variables to reuse
+storage.
 
 Function parameters and locals occupy static frame cells. Expression calls use
 spill cells when a later call would overwrite an earlier result in `rv`.
 
-Arrays occupy four metadata cells followed by their data:
+Byte arrays occupy four metadata cells followed by their data:
 
 ```text
 base + 0     space
@@ -106,13 +108,15 @@ base + 4..   array elements
 ```
 
 Constant array accesses compile directly to a known data cell. Dynamic accesses
-use the metadata cells and array traversal microcode.
+use the metadata cells and array traversal microcode. Int and fixed arrays use
+four cells per element and lower dynamic indexes to comparisons against their
+statically allocated elements.
 
 ### Scratch And Control Cells
 
-The 12 primitive scratch cells support comparisons, division, bitwise
-operations, shifts, and decimal printing. Control cells are allocated in a
-stack-like manner while emitting nested conditions and loops.
+The 12 primitive scratch cells support comparisons, integer and fixed-point
+arithmetic, bitwise operations, shifts, and decimal printing. Control cells are
+allocated in a stack-like manner while emitting nested conditions and loops.
 
 ## Control Flow Lowering
 

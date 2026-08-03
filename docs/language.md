@@ -1,8 +1,8 @@
 # Language Reference
 
-Sane 1.2 is a byte-oriented language. A `byte` is an unsigned 8-bit value
-stored in one Brainfuck cell. Arithmetic wraps modulo 256. Zero is false and
-every non-zero value is true.
+Sane provides byte, signed integer, and fixed-point scalar values. A `byte` is
+an unsigned 8-bit value stored in one Brainfuck cell. Arithmetic wraps modulo
+256. Zero is false and every non-zero value is true for every scalar type.
 
 ## Source Files
 
@@ -26,9 +26,9 @@ let x = 65;
 ## Reserved Keywords
 
 The reserved keywords are `let`, `const`, `fn`, `return`, `if`, `else`,
-`while`, `loop`, `for`, `break`, `continue`, `byte`, `put`, `puts`, `print`,
-`println`, `read`, `int`, `as`, `true`, and `false`. They cannot be used as
-identifiers.
+`while`, `loop`, `for`, `break`, `continue`, `byte`, `int`, `fixed`, `put`,
+`puts`, `print`, `println`, `read`, `as`, `true`, and `false`. They cannot be
+used as identifiers.
 
 `const` became a reserved keyword in Sane 1.2; older source that used it as an
 identifier must rename that identifier.
@@ -43,10 +43,12 @@ let x: byte;
 let y: byte = 65;
 let z = 'A';
 let wide: int = 300;
+let ratio: fixed = 1.5;
 ```
 
-`let name = expr;` infers `byte` for values through 255 and `int` for wider
-32-bit literals. Inner scopes may shadow outer names:
+`let name = expr;` infers `byte` for integer values through 255, `int` for
+wider integer literals, and `fixed` for decimal-point literals. Inner scopes
+may shadow outer names:
 
 ```sane
 let x = 'A';
@@ -61,13 +63,15 @@ put x; // A
 
 ## Constants
 
-Constants are compile-time byte or int values and do not allocate tape cells:
+Constants are compile-time byte, int, or fixed values and do not allocate tape
+cells:
 
 ```sane
 const BLOCK_SIZE = 16;
 const NEWLINE = '\n';
 const MASK = (1 << 4) - 1;
 const WIDE_MASK = 0xffff0000;
+const HALF = 0.5;
 
 let state: byte[BLOCK_SIZE];
 put NEWLINE;
@@ -86,13 +90,14 @@ when their byte element type is established by an empty string initializer.
 
 ## Arrays
 
-Arrays are fixed-size and contain either byte or int elements:
+Arrays are fixed-size and contain byte, int, or fixed elements:
 
 ```sane
 let data: byte[4];
 let key: byte[4] = [1, 2, 3, 4];
 let text: byte[6] = "hello\n";
 let totals: int[3] = [1, 65536, -2];
+let points: fixed[3] = [1.25, -0.5, 3];
 ```
 
 When an initializer is present, the array length may be inferred:
@@ -101,14 +106,17 @@ When an initializer is present, the array length may be inferred:
 let key = [1, 2, 3, 4];
 let text = "hello\n";
 let totals = [1, 65536, -2];
+let points = [1.25, -0.5, 3];
 ```
 
 List length is the number of initializer elements. String length is the number
 of decoded ASCII bytes. List initializers infer `int[]` when any element is an
-int; byte elements widen to int elements. An empty list is rejected because its
-element type cannot be inferred; an empty string creates a zero-length byte
-array. Explicit syntax remains required for an uninitialized array. Int
-elements occupy four consecutive little-endian cells.
+int and `fixed[]` when any element is fixed; byte elements widen to the inferred
+four-cell type. Mixing int and fixed elements requires explicit casts. An empty
+list is rejected because its element type cannot be inferred; an empty string
+creates a zero-length byte array. Explicit syntax remains required for an
+uninitialized array. Int and fixed elements occupy four consecutive
+little-endian cells.
 
 An initializer must contain exactly the declared number of bytes. String
 initializers are ASCII-only and do not receive an implicit trailing `\0`.
@@ -136,6 +144,9 @@ Numeric literals may be decimal, binary, or hexadecimal:
 0x41
 300
 0xffffffff
+1.0
+12.5
+0.125
 ```
 
 Character and string literals are ASCII-only:
@@ -171,6 +182,36 @@ let wide: int = small;
 let low: byte = wide as byte;
 ```
 
+`fixed` is a signed Q16.16 value stored in four little-endian cells. Its raw
+signed 32-bit representation is divided by 65,536, giving a range from
+`-32768.0` through `32767.9999847412109375` and a resolution of
+`0.0000152587890625`. Fixed arithmetic wraps modulo 2^32.
+
+A decimal point creates a fixed literal. Conversion is performed with exact
+integer arithmetic and truncates toward zero when the decimal fraction is not
+exactly representable. Scientific notation and literals without a digit before
+the decimal point are not supported.
+
+Fixed values support negation, logical negation, addition, subtraction,
+multiplication, division, comparisons, logical operations, conditions, and the
+matching arithmetic compound assignments. Division truncates toward zero and
+returns `0.0` when its divisor is zero. Remainder, bitwise operations, and
+shifts are not defined for fixed values.
+
+Bytes widen to fixed implicitly. Int/fixed conversions and fixed narrowing are
+explicit:
+
+```sane
+let count: int = 12;
+let ratio: fixed = count as fixed;
+let whole: int = ratio as int;
+let low: byte = ratio as byte;
+```
+
+`int as fixed` shifts left by 16 bits with wrapping. `fixed as int` truncates
+toward zero. `fixed as byte` performs the same truncation and keeps the low
+eight bits. Int and fixed values do not mix implicitly.
+
 ## Assignment
 
 Plain assignment replaces the destination value:
@@ -200,15 +241,16 @@ The same operators work on array elements.
 
 ## Input And Output
 
-`read` into a `byte` reads one raw byte. The bundled interpreter writes zero on
-EOF. `read` into an `int` parses an optional leading `-` followed by decimal
-digits, ending at a line feed, carriage return, or EOF:
+`read` reads one raw byte. The bundled interpreter writes zero on EOF. Its
+target must be a byte variable or byte array element:
 
 ```sane
 read byte_value;
-read int_value;
 read data[i];
 ```
+
+Wider values are parsed explicitly by repeatedly reading bytes and combining
+their digits.
 
 Output statements have distinct formatting behavior:
 
@@ -228,12 +270,13 @@ print "player {:c} score: {:d}\n", player, score;
 print "result: {{{}}}\n", result;
 ```
 
-`{}` and `{:d}` write a byte or signed int argument as decimal text. `{:c}`
-requires a byte and writes it raw, matching `put`. `{{` and `}}` write literal
-braces. The number of placeholders must match the number of arguments. Output
-is streamed from left to right, so each expression is evaluated when its
-placeholder is reached. Runtime format strings and other format specifiers are
-not supported.
+`{}` and `{:d}` write a byte, signed int, or fixed argument as decimal text.
+Fixed output is exact, includes at least one fractional digit, and removes
+unnecessary trailing zeroes. `{:c}` requires a byte and writes it raw, matching
+`put`. `{{` and `}}` write literal braces. The number of placeholders must
+match the number of arguments. Output is streamed from left to right, so each
+expression is evaluated when its placeholder is reached. Runtime format
+strings and other format specifiers are not supported.
 
 ## Control Flow
 
@@ -291,7 +334,7 @@ condition.
 
 ## Functions
 
-Function parameters and return values may be `byte` or `int`:
+Function parameters and return values may be `byte`, `int`, or `fixed`:
 
 ```sane
 fn add(a: byte, b: byte) -> byte {
@@ -304,10 +347,15 @@ println add(40, 2);
 fn add_wide(a: int, b: int) -> int {
     return a + b;
 }
+
+fn midpoint(a: fixed, b: fixed) -> fixed {
+    return (a + b) / 2.0;
+}
 ```
 
-Byte arguments and return expressions widen to `int` implicitly. Passing or
-returning an `int` where a `byte` is required needs an explicit `as byte` cast.
+Byte arguments and return expressions widen to `int` or `fixed` implicitly.
+Int and fixed values require explicit casts when crossing those type
+boundaries or when a byte result is required.
 
 Function calls are expressions and may be nested or combined with other
 operators:
@@ -341,9 +389,9 @@ Each function has a statically allocated frame for its parameters and local
 variables. Nested calls are supported, but recursive call graphs are rejected.
 The return-address stack allows at most 16 simultaneously active calls.
 
-Every reachable path through a byte or int function must return a value with
-`return expression;`. Void functions may use only `return;`. Both return forms
-are valid only inside a function.
+Every reachable path through a byte, int, or fixed function must return a value
+with `return expression;`. Void functions may use only `return;`. Both return
+forms are valid only inside a function.
 
 ## Expressions
 
@@ -380,7 +428,8 @@ Operator precedence, from tightest to loosest:
 | 11 | `||` |
 
 Logical and comparison operations produce `0` or `1`. Bitwise operations work
-on all eight bits of a byte or all 32 bits of an int.
+on all eight bits of a byte or all 32 bits of an int and are unavailable for
+fixed values.
 
 Division by zero is defined:
 
@@ -391,7 +440,7 @@ x % 0 == x
 
 ## Current Limits
 
-- Arrays have a compile-time length and cannot mix byte and int elements.
+- Arrays have a compile-time length and cannot mix element types implicitly.
 - Dynamic array indexes are not bounds checked.
 - Recursive function call graphs are rejected.
 - Source files are compiled independently; there are no modules.

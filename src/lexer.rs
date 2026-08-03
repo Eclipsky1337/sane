@@ -21,6 +21,7 @@ pub enum TokenKind {
     Continue,
     ByteTy,
     IntTy,
+    FixedTy,
     As,
     Put,
     Puts,
@@ -31,6 +32,7 @@ pub enum TokenKind {
     False,
     Ident(String),
     Number(u32, bool),
+    FixedNumber(u32),
     StringLit(Vec<u8>),
     Colon,
     Comma,
@@ -251,6 +253,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                     "continue" => TokenKind::Continue,
                     "byte" => TokenKind::ByteTy,
                     "int" => TokenKind::IntTy,
+                    "fixed" => TokenKind::FixedTy,
                     "as" => TokenKind::As,
                     "put" => TokenKind::Put,
                     "puts" => TokenKind::Puts,
@@ -322,6 +325,57 @@ where
         } else {
             break;
         }
+    }
+
+    if radix == 10 && matches!(chars.peek(), Some((_, '.'))) {
+        let (_, point) = chars.next().expect("peeked decimal point");
+        text.push(point);
+        end += 1;
+        let fractional_start = text.len();
+        while let Some((next_pos, next)) = chars.peek().copied() {
+            if next.is_ascii_digit() {
+                text.push(next);
+                end = next_pos + next.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if text.len() == fractional_start {
+            return Err(Diagnostic::new(
+                "expected digits after decimal point",
+                Span::new(pos, end),
+            ));
+        }
+        if let Some((bad_pos, bad)) = chars.peek().copied()
+            && (bad.is_ascii_alphanumeric() || bad == '_' || bad == '.')
+        {
+            return Err(Diagnostic::new(
+                format!("invalid character {bad:?} in fixed literal"),
+                Span::point(bad_pos),
+            ));
+        }
+        let (whole, fractional) = text.split_once('.').expect("fixed literal has point");
+        let whole = whole
+            .parse::<u128>()
+            .map_err(|_| Diagnostic::new("fixed literal is too large", Span::new(pos, end)))?;
+        let fractional = fractional
+            .parse::<u128>()
+            .map_err(|_| Diagnostic::new("fixed literal is too large", Span::new(pos, end)))?;
+        let scale = 10u128
+            .checked_pow((text.len() - fractional_start) as u32)
+            .ok_or_else(|| Diagnostic::new("fixed literal is too precise", Span::new(pos, end)))?;
+        let raw = whole
+            .checked_mul(65_536)
+            .and_then(|value| value.checked_add(fractional.checked_mul(65_536)? / scale))
+            .ok_or_else(|| Diagnostic::new("fixed literal is too large", Span::new(pos, end)))?;
+        if raw > 0x8000_0000 {
+            return Err(Diagnostic::new(
+                "fixed literal exceeds signed Q16.16 range",
+                Span::new(pos, end),
+            ));
+        }
+        return Ok(tok(TokenKind::FixedNumber(raw as u32), pos, end));
     }
 
     let digits = match radix {

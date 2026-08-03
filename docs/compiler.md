@@ -38,8 +38,8 @@ sanec program.sn -o program.bf
 ```
 
 The compiler resolves `const` declarations without allocating tape cells.
-Constants can define byte expressions and explicit array lengths. Array lengths
-may also be inferred from list and string initializers; see the
+Constants can define byte, int, and fixed expressions. Array lengths may also
+be inferred from list and string initializers; see the
 [Language Reference](language.md) for syntax and scope rules.
 
 Formatted output such as `print "step {}: {:d} ({:c})\n", step, value, mark;`
@@ -60,8 +60,8 @@ sanec -b structured program.sn -o program.bf
 ```
 
 The experimental `pc` backend lowers the program to basic-block IR and emits a
-Brainfuck dispatcher loop. It supports byte and void functions, expression and
-statement calls, and returns:
+Brainfuck dispatcher loop. It supports byte, int, fixed, and void functions,
+expression and statement calls, and returns:
 
 ```sh
 sanec -b pc examples/Collatz.sn -o collatz.bf

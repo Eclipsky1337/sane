@@ -27,9 +27,22 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] addition, subtraction, equality, and conditions
   - [x] signed ordering, logical, bitwise, and shift operations
   - [x] core arithmetic and comparisons
-  - [x] signed decimal I/O
+  - [x] signed decimal output and raw byte input
   - [x] function values and typed spills
   - [x] four-cell arrays and indexing
+- [ ] Phase 5: compile-time formatted input
+  - [ ] `input` syntax, AST, and semantic validation
+  - [ ] typed decimal and raw-byte placeholders
+  - [ ] conversion-count result and deterministic failure behavior
+  - [ ] structured and PC backend lowering
+  - [ ] tests, examples, CLI documentation, and language documentation
+- [x] Phase 6: Q16.16 fixed-point values
+  - [x] representation and language design
+  - [x] literals, declarations, assignment, and casts
+  - [x] arithmetic, comparisons, conditions, and wide intermediates
+  - [x] constants, functions, typed spills, and arrays
+  - [x] exact decimal output
+  - [x] tests, examples, and documentation
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES
@@ -46,7 +59,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 110 tests
+- The full test suite currently contains 150 tests
 
 Before starting work:
 
@@ -520,6 +533,80 @@ Collatz should end at `step 16: 1` for input `7`.
 
 Keep syntax tests independent from `examples/`. Examples are user-facing
 programs, not the language coverage matrix.
+
+## Phase 5: Compile-Time Formatted Input
+
+Keep `read` as the low-level input primitive. It must continue to consume
+exactly one raw byte and may target only a byte variable or byte array element.
+Do not make `read` behavior depend on the target type.
+
+Add a separate formatted input expression whose surface mirrors formatted
+output:
+
+```sane
+let left: int;
+let right: int;
+let matched: byte = input("{} {}", left, right);
+
+if matched == 2 {
+    print "sum: {}\n", left + right;
+} else {
+    puts "invalid input\n";
+}
+```
+
+`input` is a compiler-recognized expression rather than an ordinary function.
+Its first argument must be a compile-time string literal and its remaining
+arguments must be writable scalar variables or array elements. No address-of
+operator is introduced. Destination indexes are evaluated from left to right
+when their corresponding placeholder is reached.
+
+Initial placeholder support:
+
+- `{}` and `{:d}` parse decimal text according to the destination type
+  - `byte`: one or more decimal digits in the range 0 through 255
+  - `int`: an optional leading `-` and one or more decimal digits in the signed
+    32-bit range
+- `{:c}` consumes one raw byte and requires a byte destination
+- `{{` and `}}` match literal braces
+
+Required matching and failure semantics:
+
+- ordinary format characters must match input exactly
+- format whitespace has no implicit C `scanf` behavior; it matches exactly
+- each destination is updated only after its complete field parses
+  successfully
+- parsing stops at the first literal mismatch, invalid field, overflow, or EOF
+- the expression returns the number of successfully assigned fields as a byte
+- a failed field leaves its destination unchanged
+- input already consumed while discovering a mismatch is not pushed back
+- a trailing decimal placeholder ends at line feed, carriage return, or EOF
+
+The implementation may retain one lookahead byte while matching a format. It
+must not require a general input buffer, pointer type, or runtime format parser.
+Formatting must be parsed and validated by the compiler, then lowered through
+both the structured and PC pipelines.
+
+The first version intentionally excludes:
+
+- runtime format strings
+- strings or variable-length byte sequences
+- field widths and assignment suppression
+- hexadecimal, binary, octal, floating-point, or unsigned-int formats
+- automatic whitespace skipping
+- locale-dependent behavior
+
+Required tests:
+
+- successful byte decimal, signed int decimal, and raw-byte fields
+- multiple fields with literal separators and left-to-right assignment
+- negative values and signed 32-bit boundaries
+- invalid characters, empty fields, overflow, literal mismatch, and EOF
+- destinations remain unchanged when their field fails
+- conversion count stops at the first failure
+- dynamic byte and int array-element destinations
+- equivalent behavior in structured and PC backends
+- existing raw-byte `read` tests and PC benchmark baselines remain unchanged
 
 ## Explicitly Deferred Work
 

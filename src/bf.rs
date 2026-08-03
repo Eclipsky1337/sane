@@ -35,7 +35,7 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
     let wide_return = program
         .functions
         .iter()
-        .any(|function| function.return_type == ReturnType::Int);
+        .any(|function| matches!(function.return_type, ReturnType::Int | ReturnType::Fixed));
     let reserved_cells = if wide_return { 10 } else { 7 } + MAX_CALL_DEPTH;
     let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), reserved_cells);
     let call_depth = out.control_base() + if wide_return { 9 } else { 6 };
@@ -168,10 +168,10 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
                     out.clear(layout.base);
                     out.copy_add(rt.rv, layout.base, T0);
                 }
-                ValueType::Int => copy_int_layout(
+                ValueType::Int | ValueType::Fixed => copy_int_layout(
                     ValueLayout {
                         base: rt.rv,
-                        value_type: ValueType::Int,
+                        value_type: layout.value_type,
                     },
                     *layout,
                     out,
@@ -383,7 +383,7 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
                 let element = layout.element(offset);
                 match layout.value_type {
                     ValueType::Byte => out.set_const(element.base, value as u8),
-                    ValueType::Int => {
+                    ValueType::Int | ValueType::Fixed => {
                         for (byte_offset, byte) in value.to_le_bytes().into_iter().enumerate() {
                             out.set_const(element.base + byte_offset, byte);
                         }
@@ -411,10 +411,10 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
             emit_decimal(expr, out)?;
             out.put_byte_const(b'\n');
         }
-        Stmt::Read(layout) => match layout.value_type {
-            ValueType::Byte => out.read(layout.base),
-            ValueType::Int => emit_int_read(*layout, out)?,
-        },
+        Stmt::Read(layout) => {
+            debug_assert_eq!(layout.value_type, ValueType::Byte);
+            out.read(layout.base);
+        }
         Stmt::ReadArray { layout, index } => emit_array_read(*layout, index, out)?,
         Stmt::Call { .. } | Stmt::Return(_) => {
             return Err(
@@ -476,81 +476,21 @@ fn emit_decimal(expr: &Expr, out: &mut BfOut) -> Result<(), String> {
             out.print_int_decimal(layout)?;
             out.free_control_cells(4);
         }
+        ValueType::Fixed => {
+            let base = out.alloc_control_cell();
+            for _ in 1..4 {
+                out.alloc_control_cell();
+            }
+            let layout = ValueLayout {
+                base,
+                value_type: ValueType::Fixed,
+            };
+            emit_fixed_to(expr, layout, out)?;
+            out.print_fixed_decimal(layout)?;
+            out.free_control_cells(4);
+        }
     }
     Ok(())
-}
-
-fn emit_int_read(layout: ValueLayout, out: &mut BfOut) -> Result<(), String> {
-    let input = out.alloc_control_cell();
-    let sign = out.alloc_control_cell();
-    let active = out.alloc_control_cell();
-    let check = out.alloc_control_cell();
-    let expected = out.alloc_control_cell();
-
-    for cell in layout.cells() {
-        out.clear(cell);
-    }
-    out.read(input);
-
-    out.clear(check);
-    out.copy_add(input, check, T0);
-    out.clear(expected);
-    out.set_const(expected, b'-');
-    out.eq(check, expected);
-    out.clear(sign);
-    out.copy_add(check, sign, T0);
-    out.goto(check);
-    out.code.push('[');
-    out.clear(check);
-    out.read(input);
-    out.goto(check);
-    out.code.push(']');
-
-    set_decimal_input_active(input, active, check, expected, out);
-    out.goto(active);
-    out.code.push('[');
-    out.clear(active);
-    out.sub_const(input, b'0');
-    emit_int_mul(&Expr::Var(layout), &Expr::Int(10), layout, out)?;
-    emit_int_add_sub(
-        &Expr::Var(layout),
-        &Expr::Var(ValueLayout {
-            base: input,
-            value_type: ValueType::Byte,
-        }),
-        BinOp::Add,
-        layout,
-        out,
-    )?;
-    out.read(input);
-    set_decimal_input_active(input, active, check, expected, out);
-    out.goto(active);
-    out.code.push(']');
-
-    negate_layout_if(layout, sign, out)?;
-    out.free_control_cells(5);
-    Ok(())
-}
-
-fn set_decimal_input_active(
-    input: usize,
-    active: usize,
-    check: usize,
-    expected: usize,
-    out: &mut BfOut,
-) {
-    out.clear(active);
-    out.copy_add(input, active, T0);
-    out.boolify(active, T0);
-    for terminator in [b'\n', b'\r'] {
-        out.clear(check);
-        out.copy_add(input, check, T0);
-        out.clear(expected);
-        out.set_const(expected, terminator);
-        out.eq(check, expected);
-        out.logical_not(check, T0);
-        out.bool_and(active, check, T0);
-    }
 }
 
 fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
@@ -731,22 +671,26 @@ fn emit_expr_to(
     out: &mut BfOut,
     reserved: &[usize],
 ) -> Result<(), String> {
-    if expr.value_type() == ValueType::Int {
+    if matches!(expr.value_type(), ValueType::Int | ValueType::Fixed) {
         let base = out.alloc_control_cell();
         for _ in 1..4 {
             out.alloc_control_cell();
         }
         let layout = ValueLayout {
             base,
-            value_type: ValueType::Int,
+            value_type: expr.value_type(),
         };
-        emit_int_to(expr, layout, out)?;
+        emit_value_to(expr, layout, out)?;
         let tmp = alloc_temp(&[dst])?;
+        let value_tmp = alloc_temp(&[dst, tmp])?;
         out.clear(dst);
         for cell in layout.cells() {
-            out.copy_add(cell, dst, tmp);
+            out.clear(tmp);
+            out.copy_add(cell, tmp, value_tmp);
+            out.boolify(tmp, value_tmp);
+            out.move_add(tmp, dst);
+            out.boolify(dst, value_tmp);
         }
-        out.boolify(dst, tmp);
         out.free_control_cells(4);
         return Ok(());
     }
@@ -756,7 +700,8 @@ fn emit_expr_to(
             op,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
         )
-        && (left.value_type() == ValueType::Int || right.value_type() == ValueType::Int)
+        && (matches!(left.value_type(), ValueType::Int | ValueType::Fixed)
+            || matches!(right.value_type(), ValueType::Int | ValueType::Fixed))
     {
         if matches!(op, BinOp::Eq | BinOp::Ne) {
             emit_int_equality(left, right, *op, dst, out)?;
@@ -794,6 +739,7 @@ fn emit_expr_to(
             );
         }
         Expr::Int(_) => unreachable!("int values are handled before byte codegen"),
+        Expr::Fixed(_) => unreachable!("fixed values are handled before byte codegen"),
         Expr::Cast { expr, target } => {
             if *target != ValueType::Byte {
                 return Err("internal error: int cast reached byte codegen".to_string());
@@ -809,6 +755,28 @@ fn emit_expr_to(
                         out.clear(dst);
                         out.copy_add(layout.base, dst, tmp);
                     }
+                }
+                _ if expr.value_type() == ValueType::Fixed => {
+                    let base = out.alloc_control_cell();
+                    for _ in 1..4 {
+                        out.alloc_control_cell();
+                    }
+                    let int_layout = ValueLayout {
+                        base,
+                        value_type: ValueType::Int,
+                    };
+                    emit_int_to(
+                        &Expr::Cast {
+                            expr: expr.clone(),
+                            target: ValueType::Int,
+                        },
+                        int_layout,
+                        out,
+                    )?;
+                    let tmp = alloc_temp(&[dst])?;
+                    out.clear(dst);
+                    out.copy_add(int_layout.base, dst, tmp);
+                    out.free_control_cells(4);
                 }
                 _ => emit_expr_to(expr, dst, out, reserved)?,
             }
@@ -931,7 +899,7 @@ fn emit_array_set(
         return Ok(());
     }
 
-    if layout.value_type == ValueType::Int {
+    if matches!(layout.value_type, ValueType::Int | ValueType::Fixed) {
         return emit_int_array_set_dynamic(layout, index, expr, out);
     }
 
@@ -945,27 +913,10 @@ fn emit_array_set(
 }
 
 fn emit_array_read(layout: ArrayLayout, index: &Expr, out: &mut BfOut) -> Result<(), String> {
+    debug_assert_eq!(layout.value_type, ValueType::Byte);
     if let Some(index) = const_eval(index) {
         let element = array_elem(layout, usize::from(index))?;
-        match layout.value_type {
-            ValueType::Byte => out.read(element.base),
-            ValueType::Int => emit_int_read(element, out)?,
-        }
-        return Ok(());
-    }
-
-    if layout.value_type == ValueType::Int {
-        let value_base = out.alloc_control_cell();
-        for _ in 1..4 {
-            out.alloc_control_cell();
-        }
-        let value = ValueLayout {
-            base: value_base,
-            value_type: ValueType::Int,
-        };
-        emit_int_read(value, out)?;
-        emit_int_array_set_dynamic(layout, index, &Expr::Var(value), out)?;
-        out.free_control_cells(4);
+        out.read(element.base);
         return Ok(());
     }
 
@@ -1132,6 +1083,7 @@ fn const_eval(expr: &Expr) -> Option<u8> {
     match expr {
         Expr::Byte(value) => Some(*value),
         Expr::Int(_) => None,
+        Expr::Fixed(_) => None,
         Expr::Var(_) => None,
         Expr::ArrayGet { .. } => None,
         Expr::Call { .. } => None,
@@ -1197,6 +1149,7 @@ fn const_eval(expr: &Expr) -> Option<u8> {
                 _ => const_eval(expr),
             },
             ValueType::Int => None,
+            ValueType::Fixed => None,
         },
     }
 }
@@ -1205,17 +1158,21 @@ fn emit_value_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), S
     match dst.value_type {
         ValueType::Byte => emit_expr_to(expr, dst.base, out, &[dst.base]),
         ValueType::Int => emit_int_to(expr, dst, out),
+        ValueType::Fixed => emit_fixed_to(expr, dst, out),
     }
 }
 
 fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), String> {
-    debug_assert_eq!(dst.value_type, ValueType::Int);
+    debug_assert_eq!(dst.cell_width(), 4);
     if expr.value_type() == ValueType::Byte {
         emit_expr_to(expr, dst.base, out, &[dst.base])?;
         for cell in dst.base + 1..dst.base + 4 {
             out.clear(cell);
         }
         return Ok(());
+    }
+    if expr.value_type() == ValueType::Fixed {
+        return emit_fixed_raw_to(expr, dst, out);
     }
 
     match expr {
@@ -1241,7 +1198,11 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
             }
         }
         Expr::Cast { expr, target } if *target == ValueType::Int => {
-            emit_int_to(expr, dst, out)?;
+            if expr.value_type() == ValueType::Fixed {
+                emit_int_divmod(expr, &Expr::Int(65_536), BinOp::Div, dst, out)?;
+            } else {
+                emit_int_to(expr, dst, out)?;
+            }
         }
         Expr::Binary { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
             emit_int_add_sub(left, right, *op, dst, out)?;
@@ -1280,6 +1241,88 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
             emit_int_shift(left, right, *op, dst, out)?;
         }
         _ => return Err("internal error: unsupported int expression reached codegen".to_string()),
+    }
+    Ok(())
+}
+
+fn emit_fixed_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), String> {
+    debug_assert_eq!(dst.value_type, ValueType::Fixed);
+    emit_fixed_raw_to(expr, dst, out)
+}
+
+fn emit_fixed_raw_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), String> {
+    if expr.value_type() == ValueType::Byte {
+        for offset in 0..4 {
+            out.clear(dst.base + offset);
+        }
+        emit_expr_to(expr, dst.base + 2, out, &[dst.base + 2])?;
+        return Ok(());
+    }
+
+    match expr {
+        Expr::Fixed(value) => {
+            for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                out.clear(dst.base + offset);
+                out.set_const(dst.base + offset, byte);
+            }
+        }
+        Expr::Var(src) if src.value_type == ValueType::Fixed => {
+            copy_int_layout(*src, dst, out);
+        }
+        Expr::ArrayGet { layout, index } if layout.value_type == ValueType::Fixed => {
+            if let Some(index) = const_eval(index) {
+                copy_int_layout(array_elem(*layout, usize::from(index))?, dst, out);
+            } else {
+                emit_int_array_get_dynamic(*layout, index, dst, out)?;
+            }
+        }
+        Expr::Cast { expr, target } if *target == ValueType::Fixed => match expr.value_type() {
+            ValueType::Byte => {
+                for offset in 0..4 {
+                    out.clear(dst.base + offset);
+                }
+                emit_expr_to(expr, dst.base + 2, out, &[dst.base + 2])?;
+            }
+            ValueType::Int => {
+                let base = out.alloc_control_cell();
+                for _ in 1..4 {
+                    out.alloc_control_cell();
+                }
+                let source = ValueLayout {
+                    base,
+                    value_type: ValueType::Int,
+                };
+                emit_int_to(expr, source, out)?;
+                out.clear(dst.base);
+                out.clear(dst.base + 1);
+                for offset in 0..2 {
+                    out.clear(dst.base + offset + 2);
+                    out.copy_add(source.base + offset, dst.base + offset + 2, T0);
+                }
+                out.free_control_cells(4);
+            }
+            ValueType::Fixed => emit_fixed_raw_to(expr, dst, out)?,
+        },
+        Expr::Binary { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
+            emit_int_add_sub(left, right, *op, dst, out)?;
+        }
+        Expr::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } => emit_fixed_mul(left, right, dst, out)?,
+        Expr::Binary {
+            left,
+            op: BinOp::Div,
+            right,
+        } => emit_fixed_div(left, right, dst, out)?,
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+        } => emit_int_add_sub(&Expr::Fixed(0), expr, BinOp::Sub, dst, out)?,
+        _ => {
+            return Err("internal error: unsupported fixed expression reached codegen".to_string());
+        }
     }
     Ok(())
 }
@@ -1617,12 +1660,96 @@ fn emit_int_mul(
     Ok(())
 }
 
+fn emit_fixed_mul(
+    left: &Expr,
+    right: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let base = out.alloc_control_cell();
+    for _ in 1..33 {
+        out.alloc_control_cell();
+    }
+    let left_value = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let right_value = ValueLayout {
+        base: base + 4,
+        value_type: ValueType::Int,
+    };
+    let left_high = ValueLayout {
+        base: base + 8,
+        value_type: ValueType::Int,
+    };
+    let left_low = ValueLayout {
+        base: base + 12,
+        value_type: ValueType::Int,
+    };
+    let right_high = ValueLayout {
+        base: base + 16,
+        value_type: ValueType::Int,
+    };
+    let right_low = ValueLayout {
+        base: base + 20,
+        value_type: ValueType::Int,
+    };
+    let term = ValueLayout {
+        base: base + 24,
+        value_type: ValueType::Int,
+    };
+    let left_sign = base + 28;
+    let right_sign = base + 29;
+    let result_sign = base + 30;
+    let carry = base + 31;
+    let next_carry = base + 32;
+
+    emit_fixed_raw_to(left, left_value, out)?;
+    emit_fixed_raw_to(right, right_value, out)?;
+    int_sign_bit(left_value, left_sign, out);
+    int_sign_bit(right_value, right_sign, out);
+    out.clear(result_sign);
+    out.copy_add(left_sign, result_sign, T0);
+    out.clear(out.w(6));
+    out.copy_add(right_sign, out.w(6), T0);
+    out.bitwise(result_sign, out.w(6), BitOp::Xor);
+    negate_layout_if(left_value, left_sign, out)?;
+    negate_layout_if(right_value, right_sign, out)?;
+
+    for layout in [left_high, left_low, right_high, right_low] {
+        for cell in layout.cells() {
+            out.clear(cell);
+        }
+    }
+    for offset in 0..2 {
+        out.copy_add(left_value.base + offset, left_low.base + offset, T0);
+        out.copy_add(left_value.base + offset + 2, left_high.base + offset, T0);
+        out.copy_add(right_value.base + offset, right_low.base + offset, T0);
+        out.copy_add(right_value.base + offset + 2, right_high.base + offset, T0);
+    }
+
+    emit_int_mul(&Expr::Var(left_high), &Expr::Var(right_value), dst, out)?;
+    emit_int_mul(&Expr::Var(left_low), &Expr::Var(right_high), term, out)?;
+    emit_int_add_sub(&Expr::Var(dst), &Expr::Var(term), BinOp::Add, dst, out)?;
+    emit_int_mul(&Expr::Var(left_low), &Expr::Var(right_low), term, out)?;
+    for _ in 0..16 {
+        emit_int_shift_once(term, BinOp::Shr, false, carry, next_carry, out);
+    }
+    emit_int_add_sub(&Expr::Var(dst), &Expr::Var(term), BinOp::Add, dst, out)?;
+    negate_layout_if(dst, result_sign, out)?;
+    out.free_control_cells(33);
+    Ok(())
+}
+
 fn int_layout_bool(layout: ValueLayout, dst: usize, out: &mut BfOut) {
     out.clear(dst);
     for cell in layout.cells() {
-        out.copy_add(cell, dst, T0);
+        out.clear(out.w(6));
+        out.copy_add(cell, out.w(6), T0);
+        out.boolify(out.w(6), T0);
+        out.move_add(out.w(6), dst);
+        out.boolify(dst, T0);
     }
-    out.boolify(dst, T0);
 }
 
 fn emit_int_divmod(
@@ -1730,6 +1857,101 @@ fn emit_int_divmod(
         _ => unreachable!(),
     }
     out.free_control_cells(25);
+    Ok(())
+}
+
+fn emit_fixed_div(
+    left: &Expr,
+    right: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let base = out.alloc_control_cell();
+    for _ in 1..24 {
+        out.alloc_control_cell();
+    }
+    let dividend = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let divisor = ValueLayout {
+        base: base + 4,
+        value_type: ValueType::Int,
+    };
+    let quotient = ValueLayout {
+        base: base + 8,
+        value_type: ValueType::Int,
+    };
+    let remainder = ValueLayout {
+        base: base + 12,
+        value_type: ValueType::Int,
+    };
+    let nonzero = base + 16;
+    let left_sign = base + 17;
+    let right_sign = base + 18;
+    let quotient_sign = base + 19;
+    let count = base + 20;
+    let carry = base + 21;
+    let next_carry = base + 22;
+    let compare = base + 23;
+
+    emit_fixed_raw_to(right, divisor, out)?;
+    emit_fixed_raw_to(left, dividend, out)?;
+    for cell in quotient.cells().chain(remainder.cells()) {
+        out.clear(cell);
+    }
+    int_layout_bool(divisor, nonzero, out);
+    int_sign_bit(dividend, left_sign, out);
+    int_sign_bit(divisor, right_sign, out);
+    out.clear(quotient_sign);
+    out.copy_add(left_sign, quotient_sign, T0);
+    out.clear(out.w(6));
+    out.copy_add(right_sign, out.w(6), T0);
+    out.bitwise(quotient_sign, out.w(6), BitOp::Xor);
+
+    out.goto(nonzero);
+    out.code.push('[');
+    out.clear(nonzero);
+    negate_layout_if(dividend, left_sign, out)?;
+    negate_layout_if(divisor, right_sign, out)?;
+    out.clear(count);
+    out.add_const(count, 48);
+    out.goto(count);
+    out.code.push('[');
+    out.sub_const(count, 1);
+
+    emit_int_shift_once(quotient, BinOp::Shl, false, carry, next_carry, out);
+    emit_int_shift_once(remainder, BinOp::Shl, false, carry, next_carry, out);
+    out.clear(out.w(6));
+    out.copy_add(dividend.base + 3, out.w(6), T0);
+    out.divmod_const(out.w(6), 128, DivModResult::Quotient);
+    out.move_add(out.w(6), remainder.base);
+    emit_int_shift_once(dividend, BinOp::Shl, false, carry, next_carry, out);
+
+    emit_int_unsigned_less(remainder, divisor, compare, out)?;
+    out.logical_not(compare, T0);
+    out.goto(compare);
+    out.code.push('[');
+    out.clear(compare);
+    emit_int_add_sub(
+        &Expr::Var(remainder),
+        &Expr::Var(divisor),
+        BinOp::Sub,
+        remainder,
+        out,
+    )?;
+    out.add_const(quotient.base, 1);
+    out.goto(compare);
+    out.code.push(']');
+
+    out.goto(count);
+    out.code.push(']');
+    negate_layout_if(quotient, quotient_sign, out)?;
+    out.goto(nonzero);
+    out.code.push(']');
+
+    copy_int_layout(quotient, dst, out);
+    out.free_control_cells(24);
     Ok(())
 }
 
@@ -2508,6 +2730,113 @@ impl BfOut {
         self.put(ones);
 
         self.free_control_cells(7);
+    }
+
+    fn print_fixed_decimal(&mut self, value: ValueLayout) -> Result<(), String> {
+        let base = self.alloc_control_cell();
+        for _ in 1..21 {
+            self.alloc_control_cell();
+        }
+        let magnitude = ValueLayout {
+            base,
+            value_type: ValueType::Int,
+        };
+        let integer = ValueLayout {
+            base: base + 4,
+            value_type: ValueType::Int,
+        };
+        let remainder = ValueLayout {
+            base: base + 8,
+            value_type: ValueType::Int,
+        };
+        let product = ValueLayout {
+            base: base + 12,
+            value_type: ValueType::Int,
+        };
+        let digit = base + 16;
+        let pending_zeros = base + 17;
+        let printed_fraction = base + 18;
+        let nonzero = base + 19;
+        let zero = base + 20;
+
+        copy_int_layout(value, magnitude, self);
+        int_sign_bit(magnitude, nonzero, self);
+        self.goto(nonzero);
+        self.code.push('[');
+        self.clear(nonzero);
+        self.put_byte_const(b'-');
+        emit_int_add_sub(
+            &Expr::Int(0),
+            &Expr::Var(magnitude),
+            BinOp::Sub,
+            magnitude,
+            self,
+        )?;
+        self.goto(nonzero);
+        self.code.push(']');
+
+        for cell in integer.cells().chain(remainder.cells()) {
+            self.clear(cell);
+        }
+        self.copy_add(magnitude.base + 2, integer.base, T0);
+        self.copy_add(magnitude.base + 3, integer.base + 1, T0);
+        self.copy_add(magnitude.base, remainder.base, T0);
+        self.copy_add(magnitude.base + 1, remainder.base + 1, T0);
+        self.print_int_decimal(integer)?;
+        self.put_byte_const(b'.');
+
+        self.clear(pending_zeros);
+        self.clear(printed_fraction);
+        for _ in 0..16 {
+            emit_int_mul(&Expr::Var(remainder), &Expr::Int(10), product, self)?;
+            self.clear(digit);
+            self.copy_add(product.base + 2, digit, T0);
+            self.clear(remainder.base);
+            self.clear(remainder.base + 1);
+            self.copy_add(product.base, remainder.base, T0);
+            self.copy_add(product.base + 1, remainder.base + 1, T0);
+
+            self.clear(nonzero);
+            self.copy_add(digit, nonzero, T0);
+            self.boolify(nonzero, T0);
+            self.clear(zero);
+            self.add_const(zero, 1);
+            self.goto(nonzero);
+            self.code.push('[');
+            self.clear(nonzero);
+            self.clear(zero);
+            self.goto(pending_zeros);
+            self.code.push('[');
+            self.sub_const(pending_zeros, 1);
+            self.put_byte_const(b'0');
+            self.goto(pending_zeros);
+            self.code.push(']');
+            self.add_const(digit, b'0');
+            self.put(digit);
+            self.clear(printed_fraction);
+            self.add_const(printed_fraction, 1);
+            self.goto(nonzero);
+            self.code.push(']');
+
+            self.goto(zero);
+            self.code.push('[');
+            self.clear(zero);
+            self.add_const(pending_zeros, 1);
+            self.goto(zero);
+            self.code.push(']');
+        }
+
+        self.clear(zero);
+        self.copy_add(printed_fraction, zero, T0);
+        self.logical_not(zero, T0);
+        self.goto(zero);
+        self.code.push('[');
+        self.clear(zero);
+        self.put_byte_const(b'0');
+        self.goto(zero);
+        self.code.push(']');
+        self.free_control_cells(21);
+        Ok(())
     }
 
     fn print_int_decimal(&mut self, value: ValueLayout) -> Result<(), String> {

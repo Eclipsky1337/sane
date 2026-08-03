@@ -6,7 +6,7 @@ use sane::{compile_source, compile_source_with_path};
 use sane::{lexer, parser, sema};
 
 #[test]
-fn scalar_types_define_byte_and_int_storage_widths() {
+fn scalar_types_define_byte_int_and_fixed_storage_widths() {
     let byte = sema::ValueLayout::byte(8);
     let int = sema::ValueLayout {
         base: 12,
@@ -15,6 +15,7 @@ fn scalar_types_define_byte_and_int_storage_widths() {
 
     assert_eq!(ValueType::Byte.cell_width(), 1);
     assert_eq!(ValueType::Int.cell_width(), 4);
+    assert_eq!(ValueType::Fixed.cell_width(), 4);
     assert_eq!(byte.cells(), 8..9);
     assert_eq!(int.cells(), 12..16);
 }
@@ -208,6 +209,13 @@ fn int_multiplication_wraps_across_four_cells() {
     ";
     let bf = compile_source(src).unwrap();
     assert_eq!(run_bf(&bf, &[]), b"ABCD");
+}
+
+#[test]
+fn int_multiplication_does_not_treat_byte_sum_256_as_zero() {
+    let src = "let left: int = 1; let right: int = 32767; print left * right;";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"32767");
 }
 
 #[test]

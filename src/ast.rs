@@ -20,6 +20,7 @@ pub struct Function {
 pub enum ValueType {
     Byte,
     Int,
+    Fixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +33,7 @@ impl ValueType {
     pub const fn cell_width(self) -> usize {
         match self {
             Self::Byte => 1,
-            Self::Int => 4,
+            Self::Int | Self::Fixed => 4,
         }
     }
 }
@@ -42,6 +43,7 @@ pub enum ReturnType {
     Void,
     Byte,
     Int,
+    Fixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +181,7 @@ impl ArrayInit {
 pub enum Expr {
     Byte(u8, Span),
     Int(u32, IntLiteralKind, Span),
+    Fixed(u32, Span),
     Var(String, Span),
     ArrayGet {
         name: String,
@@ -213,7 +216,10 @@ pub enum Expr {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
-            Expr::Byte(_, span) | Expr::Int(_, _, span) | Expr::Var(_, span) => *span,
+            Expr::Byte(_, span)
+            | Expr::Int(_, _, span)
+            | Expr::Fixed(_, span)
+            | Expr::Var(_, span) => *span,
             Expr::ArrayGet { span, .. } | Expr::Call { span, .. } => *span,
             Expr::Unary { span, .. } | Expr::Binary { span, .. } | Expr::Cast { span, .. } => *span,
         }

@@ -265,6 +265,7 @@ pub fn lower(program: &ResolvedProgram) -> Program {
             ReturnType::Void => Terminator::ReturnValue,
             ReturnType::Byte => Terminator::Return(ResolvedExpr::Byte(0)),
             ReturnType::Int => Terminator::Return(ResolvedExpr::Int(0)),
+            ReturnType::Fixed => Terminator::Return(ResolvedExpr::Fixed(0)),
         };
         builder.set_terminator_if_open(end, terminator);
     }
@@ -582,9 +583,10 @@ impl Builder {
         expr: &ResolvedExpr,
     ) -> (BlockId, ResolvedExpr) {
         match expr {
-            ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => {
-                (current, expr.clone())
-            }
+            ResolvedExpr::Byte(_)
+            | ResolvedExpr::Int(_)
+            | ResolvedExpr::Fixed(_)
+            | ResolvedExpr::Var(_) => (current, expr.clone()),
             ResolvedExpr::ArrayGet { layout, index } => {
                 let (current, index) = self.lower_expr_calls(current, index);
                 (

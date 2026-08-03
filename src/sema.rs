@@ -44,7 +44,7 @@ impl ArrayLayout {
     pub const fn storage_len(self) -> usize {
         match self.value_type {
             ValueType::Byte => 4 + self.len,
-            ValueType::Int => self.len * 4,
+            ValueType::Int | ValueType::Fixed => self.len * 4,
         }
     }
 
@@ -52,7 +52,7 @@ impl ArrayLayout {
         ValueLayout {
             base: match self.value_type {
                 ValueType::Byte => self.base + 4 + index,
-                ValueType::Int => self.base + index * 4,
+                ValueType::Int | ValueType::Fixed => self.base + index * 4,
             },
             value_type: self.value_type,
         }
@@ -180,6 +180,7 @@ pub enum ResolvedStmt {
 pub enum ResolvedExpr {
     Byte(u8),
     Int(u32),
+    Fixed(u32),
     Var(ValueLayout),
     ArrayGet {
         layout: ArrayLayout,
@@ -210,11 +211,13 @@ impl ResolvedExpr {
         match self {
             Self::Byte(_) => ValueType::Byte,
             Self::Int(_) => ValueType::Int,
+            Self::Fixed(_) => ValueType::Fixed,
             Self::Var(layout) => layout.value_type,
             Self::ArrayGet { layout, .. } => layout.value_type,
             Self::Call { value_type, .. } => *value_type,
             Self::Unary { op, expr } => match op {
                 UnOp::Not => ValueType::Byte,
+                UnOp::Neg if expr.value_type() == ValueType::Fixed => ValueType::Fixed,
                 UnOp::Neg => ValueType::Int,
                 UnOp::BitNot => expr.value_type(),
             },
@@ -229,6 +232,11 @@ impl ResolvedExpr {
                 | BinOp::Ge
                 | BinOp::Or
                 | BinOp::And => ValueType::Byte,
+                _ if left.value_type() == ValueType::Fixed
+                    || right.value_type() == ValueType::Fixed =>
+                {
+                    ValueType::Fixed
+                }
                 _ if left.value_type() == ValueType::Int
                     || right.value_type() == ValueType::Int =>
                 {
@@ -585,7 +593,7 @@ impl Resolver {
                 };
                 let storage_len = match value_type {
                     ValueType::Byte => 4 + len,
-                    ValueType::Int => len * 4,
+                    ValueType::Int | ValueType::Fixed => len * 4,
                 };
                 let base = self.alloc_scope_block(storage_len);
                 let layout = ArrayLayout {
@@ -698,6 +706,12 @@ impl Resolver {
             }
             Stmt::Read(name, span) => {
                 let layout = self.lookup_scalar(name, *span, "read into undeclared variable")?;
+                if layout.value_type != ValueType::Byte {
+                    return Err(Diagnostic::new(
+                        "read requires a byte target; parse wider values explicitly",
+                        *span,
+                    ));
+                }
                 Ok(ResolvedStmt::Read(layout))
             }
             Stmt::ReadArray {
@@ -707,6 +721,12 @@ impl Resolver {
                 ..
             } => {
                 let layout = self.lookup_array(name, *name_span)?;
+                if layout.value_type != ValueType::Byte {
+                    return Err(Diagnostic::new(
+                        "read requires a byte array element; parse wider values explicitly",
+                        *name_span,
+                    ));
+                }
                 self.check_const_index(index, layout.len)?;
                 let index = self.resolve_expr(index)?;
                 self.require_byte(&index, *name_span, "array indexing")?;
@@ -759,6 +779,25 @@ impl Resolver {
                             expr = ResolvedExpr::Cast {
                                 expr: Box::new(expr),
                                 target: ValueType::Int,
+                            };
+                        }
+                        Ok(ResolvedStmt::Return(Some(expr)))
+                    }
+                    (ReturnType::Fixed, None) => {
+                        Err(Diagnostic::new("fixed function must return a value", *span))
+                    }
+                    (ReturnType::Fixed, Some(expr)) => {
+                        let mut expr = self.resolve_expr(expr)?;
+                        if !can_assign(ValueType::Fixed, expr.value_type()) {
+                            return Err(Diagnostic::new(
+                                "cannot return expression from fixed function",
+                                *span,
+                            ));
+                        }
+                        if expr.value_type() == ValueType::Byte {
+                            expr = ResolvedExpr::Cast {
+                                expr: Box::new(expr),
+                                target: ValueType::Fixed,
                             };
                         }
                         Ok(ResolvedStmt::Return(Some(expr)))
@@ -858,6 +897,15 @@ impl Resolver {
                 }
                 Ok(ResolvedExpr::Int(*value))
             }
+            Expr::Fixed(value, span) => {
+                if *value > i32::MAX as u32 {
+                    return Err(Diagnostic::new(
+                        "positive fixed literal exceeds signed Q16.16 range",
+                        *span,
+                    ));
+                }
+                Ok(ResolvedExpr::Fixed(*value))
+            }
             Expr::Var(name, span) => {
                 match self.lookup_symbol(name, *span, "use of undeclared variable")? {
                     Symbol::Const {
@@ -865,6 +913,7 @@ impl Resolver {
                     } => Ok(match value_type {
                         ValueType::Byte => ResolvedExpr::Byte(value as u8),
                         ValueType::Int => ResolvedExpr::Int(value),
+                        ValueType::Fixed => ResolvedExpr::Fixed(value),
                     }),
                     Symbol::Scalar(layout) => Ok(ResolvedExpr::Var(layout)),
                     Symbol::Array(_) => {
@@ -903,6 +952,7 @@ impl Resolver {
                 let value_type = match self.function_return_types[function] {
                     ReturnType::Byte => ValueType::Byte,
                     ReturnType::Int => ValueType::Int,
+                    ReturnType::Fixed => ValueType::Fixed,
                     ReturnType::Void => unreachable!(),
                 };
                 Ok(ResolvedExpr::Call {
@@ -917,6 +967,11 @@ impl Resolver {
                 {
                     return Ok(ResolvedExpr::Int(0u32.wrapping_sub(*value)));
                 }
+                if *op == UnOp::Neg
+                    && let Expr::Fixed(value, _) = expr.as_ref()
+                {
+                    return Ok(ResolvedExpr::Fixed(0u32.wrapping_sub(*value)));
+                }
                 let expr = self.resolve_expr(expr)?;
                 if *op == UnOp::Neg {
                     match expr {
@@ -926,6 +981,9 @@ impl Resolver {
                         ResolvedExpr::Int(value) => {
                             return Ok(ResolvedExpr::Int(0u32.wrapping_sub(value)));
                         }
+                        ResolvedExpr::Fixed(value) => {
+                            return Ok(ResolvedExpr::Fixed(0u32.wrapping_sub(value)));
+                        }
                         expr => {
                             return Ok(ResolvedExpr::Unary {
                                 op: *op,
@@ -933,6 +991,12 @@ impl Resolver {
                             });
                         }
                     }
+                }
+                if *op == UnOp::BitNot && expr.value_type() == ValueType::Fixed {
+                    return Err(Diagnostic::new(
+                        "bitwise complement is not supported for fixed values",
+                        *span,
+                    ));
                 }
                 if *op == UnOp::BitNot || *op == UnOp::Not {
                     return Ok(ResolvedExpr::Unary {
@@ -949,10 +1013,48 @@ impl Resolver {
             Expr::Binary {
                 left, op, right, ..
             } => {
-                let left = self.resolve_expr(left)?;
-                let right = self.resolve_expr(right)?;
+                let mut left = self.resolve_expr(left)?;
+                let mut right = self.resolve_expr(right)?;
+                let has_fixed =
+                    left.value_type() == ValueType::Fixed || right.value_type() == ValueType::Fixed;
                 let has_int =
                     left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
+                if has_fixed && has_int {
+                    return Err(Diagnostic::new(
+                        "int and fixed values require an explicit cast before mixing",
+                        expr.span(),
+                    ));
+                }
+                if has_fixed
+                    && matches!(
+                        op,
+                        BinOp::BitOr
+                            | BinOp::BitXor
+                            | BinOp::BitAnd
+                            | BinOp::Shl
+                            | BinOp::Shr
+                            | BinOp::Mod
+                    )
+                {
+                    return Err(Diagnostic::new(
+                        "fixed values do not support bitwise, shift, or remainder operators",
+                        expr.span(),
+                    ));
+                }
+                if has_fixed {
+                    if left.value_type() == ValueType::Byte {
+                        left = ResolvedExpr::Cast {
+                            expr: Box::new(left),
+                            target: ValueType::Fixed,
+                        };
+                    }
+                    if right.value_type() == ValueType::Byte {
+                        right = ResolvedExpr::Cast {
+                            expr: Box::new(right),
+                            target: ValueType::Fixed,
+                        };
+                    }
+                }
                 if has_int
                     && matches!(op, BinOp::Shl | BinOp::Shr)
                     && right.value_type() != ValueType::Byte
@@ -1054,8 +1156,17 @@ impl Resolver {
             Some(ArrayInit::Items(items)) => {
                 let mut value_type = ValueType::Byte;
                 for item in items {
-                    if self.resolve_expr(item)?.value_type() == ValueType::Int {
-                        value_type = ValueType::Int;
+                    let item_type = self.resolve_expr(item)?.value_type();
+                    match (value_type, item_type) {
+                        (ValueType::Int, ValueType::Fixed) | (ValueType::Fixed, ValueType::Int) => {
+                            return Err(Diagnostic::new(
+                                "cannot infer an array type from mixed int and fixed values",
+                                item.span(),
+                            ));
+                        }
+                        (_, ValueType::Int) => value_type = ValueType::Int,
+                        (_, ValueType::Fixed) => value_type = ValueType::Fixed,
+                        _ => {}
                     }
                 }
                 Ok(value_type)
@@ -1121,19 +1232,20 @@ impl Resolver {
                                 expr.span(),
                             ));
                         }
-                        eval_resolved_const(&resolved).ok_or_else(|| {
+                        let value = eval_resolved_const(&resolved).ok_or_else(|| {
                             Diagnostic::new(
                                 match value_type {
                                     ValueType::Byte => {
                                         "array initializer elements must be constant bytes"
                                     }
-                                    ValueType::Int => {
+                                    ValueType::Int | ValueType::Fixed => {
                                         "array initializer elements must be constant scalar expressions"
                                     }
                                 },
                                 expr.span(),
                             )
-                        })
+                        })?;
+                        Ok(convert_const_value(value, resolved.value_type(), value_type))
                     })
                     .collect()
             }
@@ -1173,6 +1285,18 @@ impl Resolver {
                     value_type: ValueType::Int,
                 })
             }
+            Expr::Fixed(value, span) => {
+                if *value > i32::MAX as u32 {
+                    return Err(Diagnostic::new(
+                        "positive fixed literal exceeds signed Q16.16 range",
+                        *span,
+                    ));
+                }
+                Ok(ConstValue {
+                    value: *value,
+                    value_type: ValueType::Fixed,
+                })
+            }
             Expr::Var(name, span) => match self.lookup_symbol(
                 name,
                 *span,
@@ -1207,9 +1331,18 @@ impl Resolver {
                         value_type: ValueType::Int,
                     });
                 }
+                if *op == UnOp::Neg
+                    && let Expr::Fixed(value, _) = expr.as_ref()
+                {
+                    return Ok(ConstValue {
+                        value: 0u32.wrapping_sub(*value),
+                        value_type: ValueType::Fixed,
+                    });
+                }
                 let value = self.eval_const_expr(expr)?;
                 let value_type = match op {
                     UnOp::Not => ValueType::Byte,
+                    UnOp::Neg if value.value_type == ValueType::Fixed => ValueType::Fixed,
                     UnOp::Neg => ValueType::Int,
                     UnOp::BitNot => value.value_type,
                 };
@@ -1218,6 +1351,12 @@ impl Resolver {
                     (UnOp::Neg, _) => 0u32.wrapping_sub(value.value),
                     (UnOp::BitNot, ValueType::Byte) => u32::from(!(value.value as u8)),
                     (UnOp::BitNot, ValueType::Int) => !value.value,
+                    (UnOp::BitNot, ValueType::Fixed) => {
+                        return Err(Diagnostic::new(
+                            "bitwise complement is not supported for fixed values",
+                            expr.span(),
+                        ));
+                    }
                 };
                 Ok(ConstValue {
                     value: raw,
@@ -1229,12 +1368,48 @@ impl Resolver {
             } => {
                 let left = self.eval_const_expr(left)?;
                 let right = self.eval_const_expr(right)?;
+                let has_fixed =
+                    left.value_type == ValueType::Fixed || right.value_type == ValueType::Fixed;
                 let int_op =
                     left.value_type == ValueType::Int || right.value_type == ValueType::Int;
-                let value = if int_op {
-                    eval_int_const_binary(left.value, *op, right.value)
+                if has_fixed && int_op {
+                    return Err(Diagnostic::new(
+                        "int and fixed values require an explicit cast before mixing",
+                        expr.span(),
+                    ));
+                }
+                if has_fixed
+                    && matches!(
+                        op,
+                        BinOp::BitOr
+                            | BinOp::BitXor
+                            | BinOp::BitAnd
+                            | BinOp::Shl
+                            | BinOp::Shr
+                            | BinOp::Mod
+                    )
+                {
+                    return Err(Diagnostic::new(
+                        "fixed values do not support bitwise, shift, or remainder operators",
+                        expr.span(),
+                    ));
+                }
+                let left_value = if has_fixed {
+                    convert_const_value(left.value, left.value_type, ValueType::Fixed)
                 } else {
-                    u32::from(eval_const_binary(left.value as u8, *op, right.value as u8))
+                    left.value
+                };
+                let right_value = if has_fixed {
+                    convert_const_value(right.value, right.value_type, ValueType::Fixed)
+                } else {
+                    right.value
+                };
+                let value = if has_fixed {
+                    eval_fixed_const_binary(left_value, *op, right_value)
+                } else if int_op {
+                    eval_int_const_binary(left_value, *op, right_value)
+                } else {
+                    u32::from(eval_const_binary(left_value as u8, *op, right_value as u8))
                 };
                 let value_type = if matches!(
                     op,
@@ -1248,6 +1423,8 @@ impl Resolver {
                         | BinOp::And
                 ) {
                     ValueType::Byte
+                } else if has_fixed {
+                    ValueType::Fixed
                 } else if int_op {
                     ValueType::Int
                 } else {
@@ -1258,10 +1435,7 @@ impl Resolver {
             Expr::Cast { expr, target, .. } => {
                 let value = self.eval_const_expr(expr)?;
                 Ok(ConstValue {
-                    value: match target {
-                        ValueType::Byte => value.value & 0xff,
-                        ValueType::Int => value.value,
-                    },
+                    value: convert_const_value(value.value, value.value_type, *target),
                     value_type: *target,
                 })
             }
@@ -1404,19 +1578,32 @@ impl Resolver {
 }
 
 fn can_assign(target: ValueType, source: ValueType) -> bool {
-    target == source || (target == ValueType::Int && source == ValueType::Byte)
+    target == source
+        || (source == ValueType::Byte && matches!(target, ValueType::Int | ValueType::Fixed))
+}
+
+fn convert_const_value(value: u32, source: ValueType, target: ValueType) -> u32 {
+    match (source, target) {
+        (_, _) if source == target => value,
+        (_, ValueType::Byte) if source == ValueType::Fixed => {
+            ((value as i32) / 65_536) as u32 & 0xff
+        }
+        (_, ValueType::Byte) => value & 0xff,
+        (ValueType::Fixed, ValueType::Int) => ((value as i32) / 65_536) as u32,
+        (ValueType::Byte | ValueType::Int, ValueType::Fixed) => value.wrapping_shl(16),
+        (ValueType::Byte, ValueType::Int) => value,
+        _ => value,
+    }
 }
 
 fn eval_resolved_const(expr: &ResolvedExpr) -> Option<u32> {
     match expr {
         ResolvedExpr::Byte(value) => Some(u32::from(*value)),
         ResolvedExpr::Int(value) => Some(*value),
+        ResolvedExpr::Fixed(value) => Some(*value),
         ResolvedExpr::Cast { expr, target } => {
             let value = eval_resolved_const(expr)?;
-            Some(match target {
-                ValueType::Byte => value & 0xff,
-                ValueType::Int => value,
-            })
+            Some(convert_const_value(value, expr.value_type(), *target))
         }
         ResolvedExpr::Unary { op, expr } => {
             let value = eval_resolved_const(expr)?;
@@ -1425,6 +1612,7 @@ fn eval_resolved_const(expr: &ResolvedExpr) -> Option<u32> {
                 UnOp::BitNot => match expr.value_type() {
                     ValueType::Byte => u32::from(!(value as u8)),
                     ValueType::Int => !value,
+                    ValueType::Fixed => return None,
                 },
                 UnOp::Not => u32::from(value == 0),
             })
@@ -1432,9 +1620,17 @@ fn eval_resolved_const(expr: &ResolvedExpr) -> Option<u32> {
         ResolvedExpr::Binary { left, op, right } => {
             let left_value = eval_resolved_const(left)?;
             let right_value = eval_resolved_const(right)?;
+            let fixed_op =
+                left.value_type() == ValueType::Fixed || right.value_type() == ValueType::Fixed;
             let int_op =
                 left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
-            let value = if int_op {
+            let value = if fixed_op {
+                eval_fixed_const_binary(
+                    convert_const_value(left_value, left.value_type(), ValueType::Fixed),
+                    *op,
+                    convert_const_value(right_value, right.value_type(), ValueType::Fixed),
+                )
+            } else if int_op {
                 eval_int_const_binary(left_value, *op, right_value)
             } else {
                 u32::from(eval_const_binary(left_value as u8, *op, right_value as u8))
@@ -1492,11 +1688,38 @@ fn eval_int_const_binary(left: u32, op: BinOp, right: u32) -> u32 {
     }
 }
 
+fn eval_fixed_const_binary(left: u32, op: BinOp, right: u32) -> u32 {
+    match op {
+        BinOp::Or => u32::from(left != 0 || right != 0),
+        BinOp::And => u32::from(left != 0 && right != 0),
+        BinOp::Add => left.wrapping_add(right),
+        BinOp::Sub => left.wrapping_sub(right),
+        BinOp::Mul => (((left as i32 as i64) * (right as i32 as i64)) / 65_536) as u32,
+        BinOp::Div => {
+            if right == 0 {
+                0
+            } else {
+                (((left as i32 as i64) * 65_536) / right as i32 as i64) as u32
+            }
+        }
+        BinOp::Eq => u32::from(left == right),
+        BinOp::Ne => u32::from(left != right),
+        BinOp::Lt => u32::from((left as i32) < right as i32),
+        BinOp::Le => u32::from((left as i32) <= right as i32),
+        BinOp::Gt => u32::from((left as i32) > right as i32),
+        BinOp::Ge => u32::from((left as i32) >= right as i32),
+        BinOp::BitOr | BinOp::BitXor | BinOp::BitAnd | BinOp::Shl | BinOp::Shr | BinOp::Mod => {
+            unreachable!("fixed operator rejected during resolution")
+        }
+    }
+}
+
 fn return_type_name(return_type: ReturnType) -> &'static str {
     match return_type {
         ReturnType::Void => "void",
         ReturnType::Byte => "byte",
         ReturnType::Int => "int",
+        ReturnType::Fixed => "fixed",
     }
 }
 
@@ -1622,7 +1845,10 @@ fn collect_stmt_call_type(stmt: &ResolvedStmt, types: &mut Vec<ValueType>) {
 
 fn collect_expr_call_types(expr: &ResolvedExpr, types: &mut Vec<ValueType>) {
     match expr {
-        ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => {}
+        ResolvedExpr::Byte(_)
+        | ResolvedExpr::Int(_)
+        | ResolvedExpr::Fixed(_)
+        | ResolvedExpr::Var(_) => {}
         ResolvedExpr::ArrayGet { index, .. } => collect_expr_call_types(index, types),
         ResolvedExpr::Call {
             args, value_type, ..

@@ -180,14 +180,11 @@ fn pc_backend_runs_int_division_and_remainder() {
 }
 
 #[test]
-fn pc_backend_runs_int_decimal_io() {
+fn pc_backend_prints_int_decimal_values() {
     let bf = compile_pc(
-        "let value: int; read value; print \"value: {} next: {:d}\\n\", value, value + 1;",
+        "let value: int = -1000000000; print \"value: {} next: {:d}\\n\", value, value + 1;",
     );
-    assert_eq!(
-        run_bf(&bf, b"-1000000000\n"),
-        b"value: -1000000000 next: -999999999\n"
-    );
+    assert_eq!(run_bf(&bf, &[]), b"value: -1000000000 next: -999999999\n");
 }
 
 #[test]

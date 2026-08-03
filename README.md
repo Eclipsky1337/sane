@@ -5,11 +5,12 @@ Sane is a small programming language that compiles to 8-bit Brainfuck.
 - `sanec` compiles Sane source (`.sn`) to Brainfuck (`.bf`).
 - `sanei` runs and debugs Brainfuck programs.
 
-Sane supports byte and void functions through the basic-block IR of the
-experimental `pc` backend. The compiler automatically uses the structured
-backend for programs without functions and the PC backend for programs with
-functions. The language also supports compile-time byte constants and inferred
-array declarations, plus compile-time checked formatted output.
+Sane supports byte, signed 32-bit integer, and signed Q16.16 fixed-point values.
+Typed functions use the basic-block IR of the experimental `pc` backend. The
+compiler automatically uses the structured backend for programs without
+functions and the PC backend for programs with functions. The language also
+supports typed compile-time constants, inferred arrays, and compile-time
+checked formatted output.
 
 ## Quick Start
 
@@ -40,7 +41,8 @@ printf "7\n" | sanei collatz.bf
 - [Compiler](docs/compiler.md): `sanec` usage, backends, diagnostics, and symbol annotations.
 - [Interpreter And Debugger](docs/interpreter.md): `sanei` usage, optimizations, and debugger commands.
 - [Architecture](docs/architecture.md): compilation pipeline, IR, tape layout, and implementation notes.
-- [32-Bit Integer Design](docs/int-design.md): planned `int` semantics, layout, conversions, and implementation stages.
+- [32-Bit Integer Design](docs/int-design.md): `int` semantics, layout, conversions, and implementation stages.
+- [Q16.16 Fixed-Point Design](docs/fixed-design.md): `fixed` representation, conversions, arithmetic, and output.
 - [Changelog](CHANGELOG.md): release history.
 
 ## Examples
@@ -71,7 +73,7 @@ cargo run --bin sanei -- --help
 ## Roadmap
 
 - Recursive functions and richer call-frame strategies.
-- Additional integer widths and pointer types.
+- Additional numeric widths, math routines, and vector types.
 - Safer dynamic array indexing.
 - Further PC-backend code-size and dispatch optimizations.
 - A module or file system for larger programs.

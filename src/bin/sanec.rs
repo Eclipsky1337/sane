@@ -151,7 +151,7 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
             } => {
                 let first = match value_type {
                     sane::ast::ValueType::Byte => base + 4,
-                    sane::ast::ValueType::Int => *base,
+                    sane::ast::ValueType::Int | sane::ast::ValueType::Fixed => *base,
                 };
                 let width = value_type.cell_width();
                 let last = if *len == 0 {

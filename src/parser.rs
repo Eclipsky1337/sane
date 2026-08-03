@@ -54,6 +54,7 @@ impl Parser {
             match self.parse_value_type()? {
                 ValueType::Byte => ReturnType::Byte,
                 ValueType::Int => ReturnType::Int,
+                ValueType::Fixed => ReturnType::Fixed,
             }
         } else {
             ReturnType::Void
@@ -743,6 +744,7 @@ impl Parser {
                     ))
                 }
             }
+            TokenKind::FixedNumber(raw) => Ok(Expr::Fixed(raw, token.span)),
             TokenKind::True => Ok(Expr::Byte(1, token.span)),
             TokenKind::False => Ok(Expr::Byte(0, token.span)),
             TokenKind::Ident(name) => {
@@ -806,6 +808,7 @@ impl Parser {
         match token.kind {
             TokenKind::ByteTy => Ok(ValueType::Byte),
             TokenKind::IntTy => Ok(ValueType::Int),
+            TokenKind::FixedTy => Ok(ValueType::Fixed),
             kind => Err(Diagnostic::new(
                 format!("expected value type, found {kind:?}"),
                 token.span,

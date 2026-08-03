@@ -4,6 +4,10 @@
 
 - Added `{:c}` raw-byte and `{:d}` explicit-decimal placeholders to formatted
   `print` output while keeping `{}` as the decimal shorthand.
+- Added signed 32-bit `int` values with four-cell arithmetic, functions,
+  arrays, casts, decimal output, and explicit byte-oriented input parsing.
+- Added signed Q16.16 `fixed` values with exact decimal literals and output,
+  arithmetic, comparisons, casts, constants, functions, and arrays.
 
 ## 1.2.0
 
