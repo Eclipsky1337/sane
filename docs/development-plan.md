@@ -19,6 +19,12 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] superblocks and fallthrough
   - [x] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
+- [ ] Phase 4: 32-bit signed integers
+  - [x] representation and language design
+  - [ ] scalar type and storage layout
+  - [ ] literals, declarations, assignment, and casts
+  - [ ] core arithmetic and comparisons
+  - [ ] functions, I/O, and arrays
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES
@@ -523,4 +529,5 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 3: function and PC debugging symbols.
+Function and PC debugging symbols are paused by request. The next work should
+follow `docs/int-design.md`, beginning with scalar type and storage layout.

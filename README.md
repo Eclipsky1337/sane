@@ -40,6 +40,7 @@ printf "7\n" | sanei collatz.bf
 - [Compiler](docs/compiler.md): `sanec` usage, backends, diagnostics, and symbol annotations.
 - [Interpreter And Debugger](docs/interpreter.md): `sanei` usage, optimizations, and debugger commands.
 - [Architecture](docs/architecture.md): compilation pipeline, IR, tape layout, and implementation notes.
+- [32-Bit Integer Design](docs/int-design.md): planned `int` semantics, layout, conversions, and implementation stages.
 - [Changelog](CHANGELOG.md): release history.
 
 ## Examples
