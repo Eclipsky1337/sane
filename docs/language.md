@@ -194,10 +194,13 @@ The same operators work on array elements.
 
 ## Input And Output
 
-`read` reads one byte. The bundled interpreter writes zero on EOF:
+`read` into a `byte` reads one raw byte. The bundled interpreter writes zero on
+EOF. `read` into an `int` parses an optional leading `-` followed by decimal
+digits, ending at a line feed, carriage return, or EOF:
 
 ```sane
-read x;
+read byte_value;
+read int_value;
 read data[i];
 ```
 
@@ -210,7 +213,7 @@ print 42;         // decimal text: 42
 println 255;      // decimal text followed by newline
 ```
 
-`print` also accepts a compile-time format string followed by byte
+`print` also accepts a compile-time format string followed by scalar
 expressions:
 
 ```sane
@@ -219,11 +222,12 @@ print "player {:c} score: {:d}\n", player, score;
 print "result: {{{}}}\n", result;
 ```
 
-`{}` and `{:d}` write one argument as decimal text. `{:c}` writes one argument
-as a raw byte, matching `put`. `{{` and `}}` write literal braces. The number of
-placeholders must match the number of arguments. Output is streamed from left
-to right, so each expression is evaluated when its placeholder is reached.
-Runtime format strings and other format specifiers are not supported.
+`{}` and `{:d}` write a byte or signed int argument as decimal text. `{:c}`
+requires a byte and writes it raw, matching `put`. `{{` and `}}` write literal
+braces. The number of placeholders must match the number of arguments. Output
+is streamed from left to right, so each expression is evaluated when its
+placeholder is reached. Runtime format strings and other format specifiers are
+not supported.
 
 ## Control Flow
 
@@ -375,7 +379,7 @@ x % 0 == x
 
 ## Current Limits
 
-- `int` decimal I/O, function values, and arrays are not yet implemented.
+- `int` function values and arrays are not yet implemented.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
 - Function parameters and return values remain bytes; top-level and block-local

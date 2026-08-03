@@ -375,15 +375,16 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
         }
         Stmt::Puts(bytes) => out.put_bytes(bytes),
         Stmt::Print(expr) => {
-            emit_expr_to(expr, T0, out, &[T0])?;
-            out.print_byte_decimal(T0);
+            emit_decimal(expr, out)?;
         }
         Stmt::Println(expr) => {
-            emit_expr_to(expr, T0, out, &[T0])?;
-            out.print_byte_decimal(T0);
+            emit_decimal(expr, out)?;
             out.put_byte_const(b'\n');
         }
-        Stmt::Read(layout) => out.read(layout.base),
+        Stmt::Read(layout) => match layout.value_type {
+            ValueType::Byte => out.read(layout.base),
+            ValueType::Int => emit_int_read(*layout, out)?,
+        },
         Stmt::ReadArray { base, len, index } => emit_array_read(*base, *len, index, out)?,
         Stmt::Call { .. } | Stmt::Return(_) => {
             return Err(
@@ -424,6 +425,102 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
         } => emit_for(init.as_deref(), cond.as_ref(), step.as_deref(), body, out)?,
     }
     Ok(())
+}
+
+fn emit_decimal(expr: &Expr, out: &mut BfOut) -> Result<(), String> {
+    match expr.value_type() {
+        ValueType::Byte => {
+            emit_expr_to(expr, T0, out, &[T0])?;
+            out.print_byte_decimal(T0);
+        }
+        ValueType::Int => {
+            let base = out.alloc_control_cell();
+            for _ in 1..4 {
+                out.alloc_control_cell();
+            }
+            let layout = ValueLayout {
+                base,
+                value_type: ValueType::Int,
+            };
+            emit_int_to(expr, layout, out)?;
+            out.print_int_decimal(layout)?;
+            out.free_control_cells(4);
+        }
+    }
+    Ok(())
+}
+
+fn emit_int_read(layout: ValueLayout, out: &mut BfOut) -> Result<(), String> {
+    let input = out.alloc_control_cell();
+    let sign = out.alloc_control_cell();
+    let active = out.alloc_control_cell();
+    let check = out.alloc_control_cell();
+    let expected = out.alloc_control_cell();
+
+    for cell in layout.cells() {
+        out.clear(cell);
+    }
+    out.read(input);
+
+    out.clear(check);
+    out.copy_add(input, check, T0);
+    out.clear(expected);
+    out.set_const(expected, b'-');
+    out.eq(check, expected);
+    out.clear(sign);
+    out.copy_add(check, sign, T0);
+    out.goto(check);
+    out.code.push('[');
+    out.clear(check);
+    out.read(input);
+    out.goto(check);
+    out.code.push(']');
+
+    set_decimal_input_active(input, active, check, expected, out);
+    out.goto(active);
+    out.code.push('[');
+    out.clear(active);
+    out.sub_const(input, b'0');
+    emit_int_mul(&Expr::Var(layout), &Expr::Int(10), layout, out)?;
+    emit_int_add_sub(
+        &Expr::Var(layout),
+        &Expr::Var(ValueLayout {
+            base: input,
+            value_type: ValueType::Byte,
+        }),
+        BinOp::Add,
+        layout,
+        out,
+    )?;
+    out.read(input);
+    set_decimal_input_active(input, active, check, expected, out);
+    out.goto(active);
+    out.code.push(']');
+
+    negate_layout_if(layout, sign, out)?;
+    out.free_control_cells(5);
+    Ok(())
+}
+
+fn set_decimal_input_active(
+    input: usize,
+    active: usize,
+    check: usize,
+    expected: usize,
+    out: &mut BfOut,
+) {
+    out.clear(active);
+    out.copy_add(input, active, T0);
+    out.boolify(active, T0);
+    for terminator in [b'\n', b'\r'] {
+        out.clear(check);
+        out.copy_add(input, check, T0);
+        out.clear(expected);
+        out.set_const(expected, terminator);
+        out.eq(check, expected);
+        out.logical_not(check, T0);
+        out.bool_and(active, check, T0);
+    }
 }
 
 fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
@@ -2284,6 +2381,92 @@ impl BfOut {
         self.put(ones);
 
         self.free_control_cells(7);
+    }
+
+    fn print_int_decimal(&mut self, value: ValueLayout) -> Result<(), String> {
+        let place_base = self.alloc_control_cell();
+        for _ in 1..4 {
+            self.alloc_control_cell();
+        }
+        let digit = self.alloc_control_cell();
+        let less = self.alloc_control_cell();
+        let guard = self.alloc_control_cell();
+        let printed = self.alloc_control_cell();
+        let flag = self.alloc_control_cell();
+        let place = ValueLayout {
+            base: place_base,
+            value_type: ValueType::Int,
+        };
+
+        int_sign_bit(value, flag, self);
+        self.goto(flag);
+        self.code.push('[');
+        self.clear(flag);
+        self.put_byte_const(b'-');
+        emit_int_add_sub(&Expr::Int(0), &Expr::Var(value), BinOp::Sub, value, self)?;
+        self.goto(flag);
+        self.code.push(']');
+
+        self.clear(printed);
+        for power in [
+            1_000_000_000u32,
+            100_000_000,
+            10_000_000,
+            1_000_000,
+            100_000,
+            10_000,
+            1_000,
+            100,
+            10,
+        ] {
+            for (offset, byte) in power.to_le_bytes().into_iter().enumerate() {
+                self.clear(place.base + offset);
+                self.set_const(place.base + offset, byte);
+            }
+            self.clear(digit);
+            self.clear(guard);
+            self.add_const(guard, 1);
+            self.goto(guard);
+            self.code.push('[');
+            self.clear(guard);
+            emit_int_unsigned_less(value, place, less, self)?;
+            self.logical_not(less, T0);
+            self.goto(less);
+            self.code.push('[');
+            self.clear(less);
+            emit_int_add_sub(
+                &Expr::Var(value),
+                &Expr::Var(place),
+                BinOp::Sub,
+                value,
+                self,
+            )?;
+            self.add_const(digit, 1);
+            self.add_const(guard, 1);
+            self.goto(less);
+            self.code.push(']');
+            self.goto(guard);
+            self.code.push(']');
+
+            self.clear(flag);
+            self.copy_add(printed, flag, T0);
+            self.copy_add(digit, flag, T0);
+            self.boolify(flag, T0);
+            self.goto(flag);
+            self.code.push('[');
+            self.clear(flag);
+            self.add_const(digit, b'0');
+            self.put(digit);
+            self.clear(printed);
+            self.add_const(printed, 1);
+            self.goto(flag);
+            self.code.push(']');
+        }
+
+        self.add_const(value.base, b'0');
+        self.put(value.base);
+        self.free_control_cells(9);
+        Ok(())
     }
 
     fn read(&mut self, cell: usize) {

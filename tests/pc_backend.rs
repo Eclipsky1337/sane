@@ -180,6 +180,17 @@ fn pc_backend_runs_int_division_and_remainder() {
 }
 
 #[test]
+fn pc_backend_runs_int_decimal_io() {
+    let bf = compile_pc(
+        "let value: int; read value; print \"value: {} next: {:d}\\n\", value, value + 1;",
+    );
+    assert_eq!(
+        run_bf(&bf, b"-1000000000\n"),
+        b"value: -1000000000 next: -999999999\n"
+    );
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

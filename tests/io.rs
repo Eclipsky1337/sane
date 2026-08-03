@@ -73,3 +73,33 @@ fn read_byte() {
     let bf = compile_source(src).unwrap();
     assert_eq!(run_bf(&bf, b"Z"), b"Z");
 }
+
+#[test]
+fn print_and_format_signed_decimal_ints() {
+    let src = r#"
+        print 0 as int;
+        put ' ';
+        print 2147483647;
+        put ' ';
+        print 0x80000000;
+        put ' ';
+        println -123456789;
+        print "{}:{:d}\n", 65536, -42;
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(
+        run_bf(&bf, &[]),
+        b"0 2147483647 -2147483648 -123456789\n65536:-42\n"
+    );
+}
+
+#[test]
+fn read_signed_decimal_ints() {
+    let src =
+        "let first: int; let second: int; read first; read second; println first; print second;";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(
+        run_bf(&bf, b"-2147483648\n123456789\n"),
+        b"-2147483648\n123456789"
+    );
+}

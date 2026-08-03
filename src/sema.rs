@@ -592,9 +592,8 @@ impl Resolver {
                 Ok(ResolvedStmt::Put(expr))
             }
             Stmt::Puts(bytes, _) => Ok(ResolvedStmt::Puts(bytes.clone())),
-            Stmt::Print(expr, span) => {
+            Stmt::Print(expr, _) => {
                 let expr = self.resolve_expr(expr)?;
-                self.require_byte(&expr, *span, "decimal output")?;
                 Ok(ResolvedStmt::Print(expr))
             }
             Stmt::PrintFormat {
@@ -607,25 +606,23 @@ impl Resolver {
                     }
                     if let Some(arg) = args.get(index) {
                         let expr = self.resolve_expr(arg)?;
-                        self.require_byte(&expr, arg.span(), "formatted output")?;
                         match specs[index] {
                             FormatSpec::Decimal => stmts.push(ResolvedStmt::Print(expr)),
-                            FormatSpec::Byte => stmts.push(ResolvedStmt::Put(expr)),
+                            FormatSpec::Byte => {
+                                self.require_byte(&expr, arg.span(), "raw formatted output")?;
+                                stmts.push(ResolvedStmt::Put(expr));
+                            }
                         }
                     }
                 }
                 Ok(ResolvedStmt::Block(stmts))
             }
-            Stmt::Println(expr, span) => {
+            Stmt::Println(expr, _) => {
                 let expr = self.resolve_expr(expr)?;
-                self.require_byte(&expr, *span, "decimal output")?;
                 Ok(ResolvedStmt::Println(expr))
             }
             Stmt::Read(name, span) => {
                 let layout = self.lookup_scalar(name, *span, "read into undeclared variable")?;
-                if layout.value_type != ValueType::Byte {
-                    return Err(Diagnostic::new("int input is not implemented yet", *span));
-                }
                 Ok(ResolvedStmt::Read(layout))
             }
             Stmt::ReadArray {

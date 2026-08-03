@@ -27,7 +27,9 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] addition, subtraction, equality, and conditions
   - [x] signed ordering, logical, bitwise, and shift operations
   - [x] core arithmetic and comparisons
-  - [ ] functions, I/O, and arrays
+  - [x] signed decimal I/O
+  - [ ] function values and typed spills
+  - [ ] four-cell arrays and indexing
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES
