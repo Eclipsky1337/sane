@@ -132,6 +132,11 @@ block compares its id with the current `pc`; the matching block performs its
 operations and writes the next block id. A halt terminator clears `running` and
 ends the dispatcher.
 
+Before code generation, unconditional jump chains are grouped when every
+target has one predecessor and is not the program entry or a function entry.
+The dispatcher compares only the resulting group heads, and a match executes
+the complete group before returning to dispatch.
+
 A call copies arguments into the callee's static frame, pushes the continuation
 block id onto the 16-cell return-pc stack, and switches `pc` to the function's
 entry block. A return writes its value to `rv`, pops the continuation, and

@@ -16,7 +16,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [ ] Phase 2: P1 PC measurement and optimization
   - [x] IR statistics and upper-bound regression tests
   - [x] reproducible benchmarks
-  - [ ] superblocks and fallthrough
+  - [x] superblocks and fallthrough
   - [ ] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
 
@@ -166,7 +166,7 @@ Generated BF instruction counts:
 
 ### Reproducible Measurement Baseline
 
-Run the deterministic PC measurement harness with:
+The pre-optimization baseline was captured at commit `4a9de53` with:
 
 ```sh
 cargo bench --locked --bench pc_backend
@@ -187,6 +187,25 @@ iterations without changing program output.
 `IR ops` counts every lowered `ir::Op`, including return-value transfer
 operations. This definition is slightly broader than the earlier ad hoc
 `Ordinary ops` measurement.
+
+### Superblock Results
+
+The PC generator now groups unconditional jump chains when each target has one
+predecessor and is not the program entry or a function entry. A dispatcher
+match executes the entire group without duplicating IR operations.
+
+Current measurements:
+
+| Program | Blocks | Dispatch groups | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Parsed ops | Dispatches | Executed ops |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `toy_aes_round` | 46 | 46 | 46 | 112 | 18 | 2 | 496,755 | 34,920 | 629 | 7,525,987 |
+| `Collatz` | 26 | 22 | 20 | 14 | 19 | 11 | 63,894 | 3,899 | 136 | 142,168 |
+
+The AES control-flow graph has no eligible unique-predecessor jump chains, so
+its measurements are unchanged. For Collatz, superblocks reduce BF size by
+1.8%, dispatches by 20.5%, and deterministic executed operations by 17.8%.
+This result is intentionally limited to the measured CFG transformation rather
+than expanding into branch duplication or a broader optimizer.
 
 Interpret "empty-op block" carefully: such a block may still perform a
 `Branch`, `Call`, or `Return`. Only an empty block with an unconditional jump is
@@ -483,4 +502,4 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 2 item 7: superblocks and fallthrough.
+The next session should begin with Phase 2 item 8: dispatcher strategy.

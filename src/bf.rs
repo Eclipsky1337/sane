@@ -62,20 +62,28 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
     out.clear(rt.dispatch_pc);
     out.copy_add(rt.pc, rt.dispatch_pc, T0);
 
-    for (index, block) in ir.blocks.iter().enumerate() {
+    for superblock in ir.superblocks() {
+        let head = superblock.blocks[0];
         out.clear(rt.matched);
         out.copy_add(rt.dispatch_pc, rt.matched, T0);
         out.clear(rt.expected);
-        out.set_const(rt.expected, index as u8);
+        out.set_const(rt.expected, block_value(head)?);
         out.eq(rt.matched, rt.expected);
 
         out.goto(rt.matched);
         out.code.push('[');
         out.clear(rt.matched);
-        for op in &block.ops {
-            emit_op(op, &mut out, rt)?;
+        for (position, block_id) in superblock.blocks.iter().copied().enumerate() {
+            let block = &ir.blocks[block_id.0];
+            for op in &block.ops {
+                emit_op(op, &mut out, rt)?;
+            }
+            if let Some(next) = superblock.blocks.get(position + 1) {
+                debug_assert_eq!(block.terminator, Terminator::Jump(*next));
+            } else {
+                emit_terminator(&block.terminator, &ir, program, &mut out, rt)?;
+            }
         }
-        emit_terminator(&block.terminator, &ir, program, &mut out, rt)?;
         out.goto(rt.matched);
         out.code.push(']');
     }

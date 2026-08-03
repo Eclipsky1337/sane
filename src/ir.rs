@@ -19,6 +19,11 @@ pub struct IrStats {
     pub branches: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Superblock {
+    pub blocks: Vec<BlockId>,
+}
+
 impl Program {
     pub fn stats(&self) -> IrStats {
         let mut reachable = vec![false; self.blocks.len()];
@@ -78,6 +83,103 @@ impl Program {
                 .filter(|block| matches!(block.terminator, Terminator::Branch { .. }))
                 .count(),
         }
+    }
+
+    pub fn superblocks(&self) -> Vec<Superblock> {
+        let mut predecessor_counts = vec![0usize; self.blocks.len()];
+        for block in &self.blocks {
+            match block.terminator {
+                Terminator::Jump(target) => predecessor_counts[target.0] += 1,
+                Terminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    predecessor_counts[then_target.0] += 1;
+                    if else_target != then_target {
+                        predecessor_counts[else_target.0] += 1;
+                    }
+                }
+                Terminator::Call {
+                    function,
+                    return_target,
+                    ..
+                } => {
+                    let function_entry = self.function_entries[function];
+                    predecessor_counts[function_entry.0] += 1;
+                    if return_target != function_entry {
+                        predecessor_counts[return_target.0] += 1;
+                    }
+                }
+                Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
+            }
+        }
+
+        let mut entry_points = vec![false; self.blocks.len()];
+        entry_points[self.entry.0] = true;
+        for entry in &self.function_entries {
+            entry_points[entry.0] = true;
+        }
+
+        let mut chained_targets = vec![false; self.blocks.len()];
+        for block in &self.blocks {
+            if let Terminator::Jump(target) = block.terminator
+                && predecessor_counts[target.0] == 1
+                && !entry_points[target.0]
+            {
+                chained_targets[target.0] = true;
+            }
+        }
+
+        let mut included = vec![false; self.blocks.len()];
+        let mut superblocks = Vec::new();
+        for block_index in 0..self.blocks.len() {
+            if !chained_targets[block_index] {
+                superblocks.push(self.build_superblock(
+                    BlockId(block_index),
+                    &chained_targets,
+                    &mut included,
+                ));
+            }
+        }
+        for block_index in 0..self.blocks.len() {
+            if !included[block_index] {
+                superblocks.push(self.build_superblock(
+                    BlockId(block_index),
+                    &chained_targets,
+                    &mut included,
+                ));
+            }
+        }
+        superblocks
+    }
+
+    fn build_superblock(
+        &self,
+        start: BlockId,
+        chained_targets: &[bool],
+        included: &mut [bool],
+    ) -> Superblock {
+        let mut blocks = Vec::new();
+        let mut current = start;
+
+        loop {
+            if included[current.0] {
+                break;
+            }
+            included[current.0] = true;
+            blocks.push(current);
+
+            let Terminator::Jump(target) = self.blocks[current.0].terminator else {
+                break;
+            };
+            if !chained_targets[target.0] || included[target.0] {
+                break;
+            }
+            current = target;
+        }
+
+        Superblock { blocks }
     }
 }
 

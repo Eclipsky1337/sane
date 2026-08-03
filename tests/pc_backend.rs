@@ -87,6 +87,53 @@ fn ir_stats_classify_control_flow_and_reachability() {
 }
 
 #[test]
+fn superblocks_join_only_unique_predecessor_jump_chains() {
+    let block = |terminator| ir::Block {
+        ops: Vec::new(),
+        terminator,
+    };
+    let program = ir::Program {
+        blocks: vec![
+            block(ir::Terminator::Jump(ir::BlockId(1))),
+            block(ir::Terminator::Jump(ir::BlockId(2))),
+            block(ir::Terminator::Branch {
+                cond: sema::ResolvedExpr::Byte(1),
+                then_target: ir::BlockId(3),
+                else_target: ir::BlockId(4),
+            }),
+            block(ir::Terminator::Jump(ir::BlockId(5))),
+            block(ir::Terminator::Jump(ir::BlockId(5))),
+            block(ir::Terminator::Halt),
+            block(ir::Terminator::Jump(ir::BlockId(7))),
+            block(ir::Terminator::ReturnValue),
+        ],
+        entry: ir::BlockId(0),
+        function_entries: vec![ir::BlockId(6)],
+    };
+
+    assert_eq!(
+        program.superblocks(),
+        vec![
+            ir::Superblock {
+                blocks: vec![ir::BlockId(0), ir::BlockId(1), ir::BlockId(2)],
+            },
+            ir::Superblock {
+                blocks: vec![ir::BlockId(3)],
+            },
+            ir::Superblock {
+                blocks: vec![ir::BlockId(4)],
+            },
+            ir::Superblock {
+                blocks: vec![ir::BlockId(5)],
+            },
+            ir::Superblock {
+                blocks: vec![ir::BlockId(6), ir::BlockId(7)],
+            },
+        ]
+    );
+}
+
+#[test]
 fn pc_backend_runs_linear_programs() {
     let bf = compile_pc("let x = 'A'; put x; puts \"\\n\";");
     assert_eq!(run_bf(&bf, &[]), b"A\n");

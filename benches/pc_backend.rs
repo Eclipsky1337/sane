@@ -27,6 +27,7 @@ step 16: 1\n";
 struct Measurement {
     name: &'static str,
     ir: ir::IrStats,
+    dispatch_groups: usize,
     bf_instructions: usize,
     parsed_ops: usize,
     dispatches: u64,
@@ -45,14 +46,15 @@ fn main() {
     ];
 
     println!(
-        "| Program | Blocks | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Parsed ops | Dispatches | Executed ops |"
+        "| Program | Blocks | Dispatch groups | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Parsed ops | Dispatches | Executed ops |"
     );
-    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for measurement in measurements {
         println!(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             measurement.name,
             measurement.ir.blocks,
+            measurement.dispatch_groups,
             measurement.ir.reachable_blocks,
             measurement.ir.ops,
             measurement.ir.empty_blocks,
@@ -89,6 +91,7 @@ fn measure(name: &'static str, source: &str, input: &[u8], expected_output: &[u8
 
     Measurement {
         name,
+        dispatch_groups: lowered.superblocks().len(),
         ir: lowered.stats(),
         bf_instructions: generated.bytes().filter(|byte| is_bf(*byte)).count(),
         parsed_ops: parsed.operation_count(),
