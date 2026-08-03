@@ -229,6 +229,16 @@ fn int_division_and_remainder_are_signed_and_deterministic() {
 }
 
 #[test]
+fn int_function_types_reject_implicit_narrowing() {
+    let err =
+        compile_source("fn take(value: byte) { } let wide: int = 300; take(wide);").unwrap_err();
+    assert!(err.contains("cannot pass Int expression to Byte parameter"));
+
+    let err = compile_source("fn narrow() -> byte { return 300; }").unwrap_err();
+    assert!(err.contains("cannot return int expression from byte function"));
+}
+
+#[test]
 fn scratch_starts_after_globals() {
     let tokens = lexer::lex("let x: byte;").unwrap();
     let mut parser = parser::Parser::new(tokens);

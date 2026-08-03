@@ -28,7 +28,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] signed ordering, logical, bitwise, and shift operations
   - [x] core arithmetic and comparisons
   - [x] signed decimal I/O
-  - [ ] function values and typed spills
+  - [x] function values and typed spills
   - [ ] four-cell arrays and indexing
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,

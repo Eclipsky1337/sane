@@ -191,6 +191,26 @@ fn pc_backend_runs_int_decimal_io() {
 }
 
 #[test]
+fn pc_backend_runs_int_functions_and_typed_spills() {
+    let bf = compile_pc(
+        r#"
+            fn add(left: int, right: int) -> int {
+                return left + right;
+            }
+
+            fn widen(value: byte) -> int {
+                return value;
+            }
+
+            let nested: int = add(add(100000, 200000), add(300000, 400000));
+            let mixed: int = add(widen(42), 65536);
+            print "{}:{}\n", nested, mixed;
+        "#,
+    );
+    assert_eq!(run_bf(&bf, &[]), b"1000000:65578\n");
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

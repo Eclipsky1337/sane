@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, UnOp, ValueType};
+use crate::ast::{BinOp, ReturnType, UnOp, ValueType};
 use crate::ir::{BlockId, Op, Terminator};
 use crate::sema::{
     MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, ValueLayout,
@@ -32,8 +32,14 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
         return Err("pc backend supports at most 256 basic blocks".to_string());
     }
 
-    const PC_RESERVED_CELLS: usize = 7 + MAX_CALL_DEPTH;
-    let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), PC_RESERVED_CELLS);
+    let wide_return = program
+        .functions
+        .iter()
+        .any(|function| function.return_type == ReturnType::Int);
+    let reserved_cells = if wide_return { 10 } else { 7 } + MAX_CALL_DEPTH;
+    let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), reserved_cells);
+    let call_depth = out.control_base() + if wide_return { 9 } else { 6 };
+    let ret_base = call_depth + 1;
     let rt = PcRuntime {
         pc: out.control_base(),
         running: out.control_base() + 1,
@@ -41,8 +47,8 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
         matched: out.control_base() + 3,
         expected: out.control_base() + 4,
         rv: out.control_base() + 5,
-        call_depth: out.control_base() + 6,
-        ret_base: out.control_base() + 7,
+        call_depth,
+        ret_base,
     };
 
     out.clear(rt.pc);
@@ -50,7 +56,9 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
     out.clear(rt.running);
     out.add_const(rt.running, 1);
     out.clear(rt.call_depth);
-    out.clear(rt.rv);
+    for cell in rt.rv..rt.rv + if wide_return { 4 } else { 1 } {
+        out.clear(cell);
+    }
     for depth in 0..MAX_CALL_DEPTH {
         out.clear(rt.ret_base + depth);
     }
@@ -158,9 +166,21 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
             },
             out,
         ),
-        Op::StoreReturn(cell) => {
-            out.clear(*cell);
-            out.copy_add(rt.rv, *cell, T0);
+        Op::StoreReturn(layout) => {
+            match layout.value_type {
+                ValueType::Byte => {
+                    out.clear(layout.base);
+                    out.copy_add(rt.rv, layout.base, T0);
+                }
+                ValueType::Int => copy_int_layout(
+                    ValueLayout {
+                        base: rt.rv,
+                        value_type: ValueType::Int,
+                    },
+                    *layout,
+                    out,
+                ),
+            }
             Ok(())
         }
         Op::PutReturn => {
@@ -236,7 +256,7 @@ fn emit_terminator(
                 return Err("internal error: argument count mismatch".to_string());
             }
             for (arg, param) in args.iter().zip(&function.params) {
-                emit_expr_to(arg, *param, out, &[*param])?;
+                emit_value_to(arg, *param, out)?;
             }
             let entry = ir
                 .function_entries
@@ -247,7 +267,14 @@ fn emit_terminator(
             out.set_const(rt.pc, block_value(entry)?);
         }
         Terminator::Return(expr) => {
-            emit_expr_to(expr, rt.rv, out, &[rt.rv])?;
+            emit_value_to(
+                expr,
+                ValueLayout {
+                    base: rt.rv,
+                    value_type: expr.value_type(),
+                },
+                out,
+            )?;
             out.sub_const(rt.call_depth, 1);
             load_ret_pc(out, rt)?;
         }

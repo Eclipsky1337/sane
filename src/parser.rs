@@ -37,10 +37,11 @@ impl Parser {
             loop {
                 let (param_name, param_span) = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
-                self.expect(TokenKind::ByteTy)?;
+                let value_type = self.parse_value_type()?;
                 params.push(Param {
                     name: param_name,
                     name_span: param_span,
+                    value_type,
                 });
                 if self.match_kind(TokenKind::Comma) {
                     continue;
@@ -50,8 +51,10 @@ impl Parser {
             }
         }
         let return_type = if self.match_kind(TokenKind::Arrow) {
-            self.expect(TokenKind::ByteTy)?;
-            ReturnType::Byte
+            match self.parse_value_type()? {
+                ValueType::Byte => ReturnType::Byte,
+                ValueType::Int => ReturnType::Int,
+            }
         } else {
             ReturnType::Void
         };

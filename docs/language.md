@@ -285,8 +285,7 @@ condition.
 
 ## Functions
 
-Functions accept byte parameters. A `-> byte` return type defines a byte
-function:
+Function parameters and return values may be `byte` or `int`:
 
 ```sane
 fn add(a: byte, b: byte) -> byte {
@@ -295,7 +294,14 @@ fn add(a: byte, b: byte) -> byte {
 }
 
 println add(40, 2);
+
+fn add_wide(a: int, b: int) -> int {
+    return a + b;
+}
 ```
+
+Byte arguments and return expressions widen to `int` implicitly. Passing or
+returning an `int` where a `byte` is required needs an explicit `as byte` cast.
 
 Function calls are expressions and may be nested or combined with other
 operators:
@@ -316,7 +322,7 @@ fn show(value: byte) {
 show(42);
 ```
 
-Calls may be standalone statements. A byte-returning call used as a statement
+Calls may be standalone statements. A value-returning call used as a statement
 discards its result. A void call cannot be used where an expression value is
 required.
 
@@ -329,7 +335,7 @@ Each function has a statically allocated frame for its parameters and local
 variables. Nested calls are supported, but recursive call graphs are rejected.
 The return-address stack allows at most 16 simultaneously active calls.
 
-Every reachable path through a byte function must return a value with
+Every reachable path through a byte or int function must return a value with
 `return expression;`. Void functions may use only `return;`. Both return forms
 are valid only inside a function.
 
@@ -379,10 +385,8 @@ x % 0 == x
 
 ## Current Limits
 
-- `int` function values and arrays are not yet implemented.
+- `int` arrays are not yet implemented.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
-- Function parameters and return values remain bytes; top-level and block-local
-  scalar variables may be bytes or ints.
 - Recursive function call graphs are rejected.
 - Source files are compiled independently; there are no modules.

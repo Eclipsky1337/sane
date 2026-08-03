@@ -80,14 +80,14 @@ pub enum SymbolInfo {
 pub struct ResolvedProgram {
     pub functions: Vec<ResolvedFunction>,
     pub stmts: Vec<ResolvedStmt>,
-    pub spills: Vec<usize>,
+    pub spills: Vec<ValueLayout>,
     pub symbols: Symbols,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFunction {
     pub name: String,
-    pub params: Vec<usize>,
+    pub params: Vec<ValueLayout>,
     pub return_type: ReturnType,
     pub body: Vec<ResolvedStmt>,
 }
@@ -165,6 +165,7 @@ pub enum ResolvedExpr {
     Call {
         function: usize,
         args: Vec<ResolvedExpr>,
+        value_type: ValueType,
     },
     Unary {
         op: UnOp,
@@ -184,9 +185,10 @@ pub enum ResolvedExpr {
 impl ResolvedExpr {
     pub fn value_type(&self) -> ValueType {
         match self {
-            Self::Byte(_) | Self::ArrayGet { .. } | Self::Call { .. } => ValueType::Byte,
+            Self::Byte(_) | Self::ArrayGet { .. } => ValueType::Byte,
             Self::Int(_) => ValueType::Int,
             Self::Var(layout) => layout.value_type,
+            Self::Call { value_type, .. } => *value_type,
             Self::Unary { op, expr } => match op {
                 UnOp::Not => ValueType::Byte,
                 UnOp::Neg => ValueType::Int,
@@ -226,13 +228,14 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
     let functions = resolver.resolve_functions(&program.functions)?;
     resolver.check_call_graph()?;
     resolver.check_call_depth()?;
-    let spill_count = count_stmt_calls(&stmts)
-        + functions
-            .iter()
-            .map(|function| count_stmt_calls(&function.body))
-            .sum::<usize>();
-    let spills = (0..spill_count)
-        .map(|_| resolver.alloc_fresh_cell())
+    let mut spill_types = Vec::new();
+    collect_stmt_call_types(&stmts, &mut spill_types);
+    for function in &functions {
+        collect_stmt_call_types(&function.body, &mut spill_types);
+    }
+    let spills = spill_types
+        .into_iter()
+        .map(|value_type| resolver.alloc_fresh_value(value_type))
         .collect::<Vec<_>>();
     Ok(ResolvedProgram {
         functions,
@@ -268,6 +271,7 @@ struct Resolver {
     functions: HashMap<String, usize>,
     function_names: Vec<String>,
     function_arities: Vec<usize>,
+    function_param_types: Vec<Vec<ValueType>>,
     function_return_types: Vec<ReturnType>,
     call_graph: Vec<Vec<usize>>,
     current_function: Option<usize>,
@@ -287,6 +291,7 @@ impl Resolver {
             functions: HashMap::new(),
             function_names: Vec::new(),
             function_arities: Vec::new(),
+            function_param_types: Vec::new(),
             function_return_types: Vec::new(),
             call_graph: Vec::new(),
             current_function: None,
@@ -309,6 +314,13 @@ impl Resolver {
             self.functions.insert(function.name.clone(), index);
             self.function_names.push(function.name.clone());
             self.function_arities.push(function.params.len());
+            self.function_param_types.push(
+                function
+                    .params
+                    .iter()
+                    .map(|param| param.value_type)
+                    .collect(),
+            );
             self.function_return_types.push(function.return_type);
             self.call_graph.push(Vec::new());
         }
@@ -330,12 +342,12 @@ impl Resolver {
                         param.name_span,
                     ));
                 }
-                let layout = self.alloc_fresh_value(ValueType::Byte);
+                let layout = self.alloc_fresh_value(param.value_type);
                 self.current_scope_mut()
                     .names
                     .insert(param.name.clone(), Symbol::Scalar(layout));
                 self.current_scope_mut().owned_cells.extend(layout.cells());
-                params.push(layout.base);
+                params.push(layout);
             }
             let previous = self.current_function.replace(index);
             let previous_start = self.current_function_start.replace(function.span.start);
@@ -343,10 +355,11 @@ impl Resolver {
             self.current_function = previous;
             self.current_function_start = previous_start;
             self.pop_scope_retain();
-            if function.return_type == ReturnType::Byte && !stmts_always_return(&body) {
+            if function.return_type != ReturnType::Void && !stmts_always_return(&body) {
                 return Err(Diagnostic::new(
                     format!(
-                        "byte function `{}` may fall through without returning a value",
+                        "{} function `{}` may fall through without returning a value",
+                        return_type_name(function.return_type),
                         function.name
                     ),
                     function.span,
@@ -662,7 +675,33 @@ impl Resolver {
                         Err(Diagnostic::new("byte function must return a value", *span))
                     }
                     (ReturnType::Byte, Some(expr)) => {
-                        Ok(ResolvedStmt::Return(Some(self.resolve_expr(expr)?)))
+                        let expr = self.resolve_expr(expr)?;
+                        if !can_assign(ValueType::Byte, expr.value_type()) {
+                            return Err(Diagnostic::new(
+                                "cannot return int expression from byte function",
+                                *span,
+                            ));
+                        }
+                        Ok(ResolvedStmt::Return(Some(expr)))
+                    }
+                    (ReturnType::Int, None) => {
+                        Err(Diagnostic::new("int function must return a value", *span))
+                    }
+                    (ReturnType::Int, Some(expr)) => {
+                        let mut expr = self.resolve_expr(expr)?;
+                        if !can_assign(ValueType::Int, expr.value_type()) {
+                            return Err(Diagnostic::new(
+                                "cannot return expression from int function",
+                                *span,
+                            ));
+                        }
+                        if expr.value_type() == ValueType::Byte {
+                            expr = ResolvedExpr::Cast {
+                                expr: Box::new(expr),
+                                target: ValueType::Int,
+                            };
+                        }
+                        Ok(ResolvedStmt::Return(Some(expr)))
                     }
                 }
             }
@@ -787,7 +826,16 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                Ok(ResolvedExpr::Call { function, args })
+                let value_type = match self.function_return_types[function] {
+                    ReturnType::Byte => ValueType::Byte,
+                    ReturnType::Int => ValueType::Int,
+                    ReturnType::Void => unreachable!(),
+                };
+                Ok(ResolvedExpr::Call {
+                    function,
+                    args,
+                    value_type,
+                })
             }
             Expr::Unary { op, expr, span } => {
                 let expr = self.resolve_expr(expr)?;
@@ -904,6 +952,18 @@ impl Resolver {
             .iter()
             .map(|arg| self.resolve_expr(arg))
             .collect::<Result<Vec<_>, _>>()?;
+        for (arg, expected) in args.iter().zip(&self.function_param_types[function]) {
+            if !can_assign(*expected, arg.value_type()) {
+                return Err(Diagnostic::new(
+                    format!(
+                        "cannot pass {:?} expression to {:?} parameter",
+                        arg.value_type(),
+                        expected
+                    ),
+                    name_span,
+                ));
+            }
+        }
         Ok((function, args))
     }
 
@@ -1116,10 +1176,6 @@ impl Resolver {
         }
     }
 
-    fn alloc_fresh_cell(&mut self) -> usize {
-        self.alloc_fresh_value(ValueType::Byte).base
-    }
-
     fn alloc_fresh_value(&mut self, value_type: ValueType) -> ValueLayout {
         let base = self.alloc_fresh_block(value_type.cell_width());
         ValueLayout { base, value_type }
@@ -1199,6 +1255,14 @@ fn can_assign(target: ValueType, source: ValueType) -> bool {
     target == source || (target == ValueType::Int && source == ValueType::Byte)
 }
 
+fn return_type_name(return_type: ReturnType) -> &'static str {
+    match return_type {
+        ReturnType::Void => "void",
+        ReturnType::Byte => "byte",
+        ReturnType::Int => "int",
+    }
+}
+
 fn eval_const_binary(left: u8, op: BinOp, right: u8) -> u8 {
     match op {
         BinOp::Or => u8::from(left != 0 || right != 0),
@@ -1246,59 +1310,97 @@ fn eval_const_binary(left: u8, op: BinOp, right: u8) -> u8 {
     }
 }
 
-fn count_stmt_calls(stmts: &[ResolvedStmt]) -> usize {
-    stmts.iter().map(count_stmt_call).sum()
+fn collect_stmt_call_types(stmts: &[ResolvedStmt], types: &mut Vec<ValueType>) {
+    for stmt in stmts {
+        collect_stmt_call_type(stmt, types);
+    }
 }
 
-fn count_stmt_call(stmt: &ResolvedStmt) -> usize {
+fn collect_stmt_call_type(stmt: &ResolvedStmt, types: &mut Vec<ValueType>) {
     match stmt {
-        ResolvedStmt::Let { init, .. } => init.as_ref().map_or(0, count_expr_calls),
+        ResolvedStmt::Let { init, .. } => {
+            if let Some(expr) = init {
+                collect_expr_call_types(expr, types);
+            }
+        }
         ResolvedStmt::Const
         | ResolvedStmt::LetArray { .. }
         | ResolvedStmt::Puts(_)
-        | ResolvedStmt::Read(_) => 0,
+        | ResolvedStmt::Read(_) => {}
         ResolvedStmt::Assign { expr, .. }
         | ResolvedStmt::Put(expr)
         | ResolvedStmt::Print(expr)
-        | ResolvedStmt::Println(expr) => count_expr_calls(expr),
-        ResolvedStmt::Call { args, .. } => args.iter().map(count_expr_calls).sum(),
-        ResolvedStmt::Return(expr) => expr.as_ref().map_or(0, count_expr_calls),
-        ResolvedStmt::ArraySet { index, expr, .. } => {
-            count_expr_calls(index) + count_expr_calls(expr)
+        | ResolvedStmt::Println(expr) => collect_expr_call_types(expr, types),
+        ResolvedStmt::Call { args, .. } => {
+            for arg in args {
+                collect_expr_call_types(arg, types);
+            }
         }
-        ResolvedStmt::ReadArray { index, .. } => count_expr_calls(index),
-        ResolvedStmt::Break | ResolvedStmt::Continue => 0,
-        ResolvedStmt::Block(stmts) | ResolvedStmt::Loop { body: stmts } => count_stmt_calls(stmts),
+        ResolvedStmt::Return(expr) => {
+            if let Some(expr) = expr {
+                collect_expr_call_types(expr, types);
+            }
+        }
+        ResolvedStmt::ArraySet { index, expr, .. } => {
+            collect_expr_call_types(index, types);
+            collect_expr_call_types(expr, types);
+        }
+        ResolvedStmt::ReadArray { index, .. } => collect_expr_call_types(index, types),
+        ResolvedStmt::Break | ResolvedStmt::Continue => {}
+        ResolvedStmt::Block(stmts) | ResolvedStmt::Loop { body: stmts } => {
+            collect_stmt_call_types(stmts, types);
+        }
         ResolvedStmt::If {
             cond,
             then_branch,
             else_branch,
-        } => count_expr_calls(cond) + count_stmt_calls(then_branch) + count_stmt_calls(else_branch),
-        ResolvedStmt::While { cond, body } => count_expr_calls(cond) + count_stmt_calls(body),
+        } => {
+            collect_expr_call_types(cond, types);
+            collect_stmt_call_types(then_branch, types);
+            collect_stmt_call_types(else_branch, types);
+        }
+        ResolvedStmt::While { cond, body } => {
+            collect_expr_call_types(cond, types);
+            collect_stmt_call_types(body, types);
+        }
         ResolvedStmt::For {
             init,
             cond,
             step,
             body,
         } => {
-            init.as_deref().map_or(0, count_stmt_call)
-                + cond.as_ref().map_or(0, count_expr_calls)
-                + step.as_deref().map_or(0, count_stmt_call)
-                + count_stmt_calls(body)
+            if let Some(init) = init.as_deref() {
+                collect_stmt_call_type(init, types);
+            }
+            if let Some(cond) = cond {
+                collect_expr_call_types(cond, types);
+            }
+            if let Some(step) = step.as_deref() {
+                collect_stmt_call_type(step, types);
+            }
+            collect_stmt_call_types(body, types);
         }
     }
 }
 
-fn count_expr_calls(expr: &ResolvedExpr) -> usize {
+fn collect_expr_call_types(expr: &ResolvedExpr, types: &mut Vec<ValueType>) {
     match expr {
-        ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => 0,
-        ResolvedExpr::ArrayGet { index, .. } => count_expr_calls(index),
-        ResolvedExpr::Call { args, .. } => 1 + args.iter().map(count_expr_calls).sum::<usize>(),
-        ResolvedExpr::Unary { expr, .. } => count_expr_calls(expr),
-        ResolvedExpr::Binary { left, right, .. } => {
-            count_expr_calls(left) + count_expr_calls(right)
+        ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => {}
+        ResolvedExpr::ArrayGet { index, .. } => collect_expr_call_types(index, types),
+        ResolvedExpr::Call {
+            args, value_type, ..
+        } => {
+            for arg in args {
+                collect_expr_call_types(arg, types);
+            }
+            types.push(*value_type);
         }
-        ResolvedExpr::Cast { expr, .. } => count_expr_calls(expr),
+        ResolvedExpr::Unary { expr, .. } => collect_expr_call_types(expr, types),
+        ResolvedExpr::Binary { left, right, .. } => {
+            collect_expr_call_types(left, types);
+            collect_expr_call_types(right, types);
+        }
+        ResolvedExpr::Cast { expr, .. } => collect_expr_call_types(expr, types),
     }
 }
 

@@ -223,7 +223,7 @@ pub enum Op {
         len: usize,
         index: ResolvedExpr,
     },
-    StoreReturn(usize),
+    StoreReturn(ValueLayout),
     PutReturn,
     PrintReturn,
     PrintlnReturn,
@@ -267,6 +267,7 @@ pub fn lower(program: &ResolvedProgram) -> Program {
         let terminator = match function.return_type {
             ReturnType::Void => Terminator::ReturnValue,
             ReturnType::Byte => Terminator::Return(ResolvedExpr::Byte(0)),
+            ReturnType::Int => Terminator::Return(ResolvedExpr::Int(0)),
         };
         builder.set_terminator_if_open(end, terminator);
     }
@@ -286,12 +287,12 @@ struct LoopTargets {
 
 struct Builder {
     blocks: Vec<Block>,
-    spills: Vec<usize>,
+    spills: Vec<ValueLayout>,
     next_spill: usize,
 }
 
 impl Builder {
-    fn new(spills: Vec<usize>) -> Self {
+    fn new(spills: Vec<ValueLayout>) -> Self {
         Self {
             blocks: Vec::new(),
             spills,
@@ -634,7 +635,11 @@ impl Builder {
                     },
                 )
             }
-            ResolvedExpr::Call { function, args } => {
+            ResolvedExpr::Call {
+                function,
+                args,
+                value_type,
+            } => {
                 let mut current = current;
                 let mut lowered_args = Vec::new();
                 for arg in args {
@@ -653,19 +658,20 @@ impl Builder {
                     },
                 );
                 self.push_op(after, Op::StoreReturn(spill));
-                (after, ResolvedExpr::Var(ValueLayout::byte(spill)))
+                debug_assert_eq!(spill.value_type, *value_type);
+                (after, ResolvedExpr::Var(spill))
             }
         }
     }
 
-    fn alloc_spill(&mut self) -> usize {
-        let cell = self
+    fn alloc_spill(&mut self) -> ValueLayout {
+        let layout = self
             .spills
             .get(self.next_spill)
             .copied()
             .expect("semantic analysis reserves enough spill cells");
         self.next_spill += 1;
-        cell
+        layout
     }
 
     fn set_terminator_if_open(&mut self, block: BlockId, terminator: Terminator) {

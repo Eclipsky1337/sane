@@ -35,6 +35,7 @@ impl ValueType {
 pub enum ReturnType {
     Void,
     Byte,
+    Int,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum FormatSpec {
 pub struct Param {
     pub name: String,
     pub name_span: Span,
+    pub value_type: ValueType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
