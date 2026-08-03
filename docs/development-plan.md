@@ -13,11 +13,11 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [x] Phase 1.5: compile-time formatted output
 - [x] Phase 1.6: typed decimal and raw-byte format placeholders
 - [x] Release 1.2: version, documentation, validation, and tag
-- [ ] Phase 2: P1 PC measurement and optimization
+- [x] Phase 2: P1 PC measurement and optimization
   - [x] IR statistics and upper-bound regression tests
   - [x] reproducible benchmarks
   - [x] superblocks and fallthrough
-  - [ ] dispatcher strategy evaluation
+  - [x] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
@@ -413,6 +413,27 @@ linear scan:
 
 Do not implement a multi-cell PC in this phase.
 
+#### Evaluation Result
+
+An eight-block grouped-dispatch prototype was measured after superblocks. It
+computed `pc / 8`, selected a group, and then linearly matched heads inside that
+group. On `toy_aes_round`, which has 46 dispatch groups, the result was:
+
+| Strategy | BF instructions | Parsed ops | Dispatches | Executed ops |
+| --- | ---: | ---: | ---: | ---: |
+| linear | 496,755 | 34,920 | 629 | 7,525,987 |
+| grouped prototype | 511,717 | 35,100 | 629 | 7,474,483 |
+
+The prototype increased BF size by 3.0% and parsed operations by 0.5%, while
+reducing deterministic executed operations by only 0.7% and leaving dispatch
+count unchanged. `Collatz` remains below the tested grouping threshold and is
+better served by the linear dispatcher after superblock formation.
+
+The grouped prototype was therefore not retained. The current measured
+programs keep linear dispatch; a hierarchical strategy should be reconsidered
+only when larger representative programs justify a threshold and its code-size
+cost.
+
 ### Phase 2 Completion Criteria
 
 - before/after numbers are recorded for both reference examples
@@ -502,4 +523,4 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 2 item 8: dispatcher strategy.
+The next session should begin with Phase 3: function and PC debugging symbols.
