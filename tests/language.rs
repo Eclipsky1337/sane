@@ -135,6 +135,58 @@ fn int_mixed_arithmetic_promotes_bytes_and_supports_negation() {
 }
 
 #[test]
+fn int_bitwise_logical_and_signed_ordering_work() {
+    let src = "
+        let left: int = 0x12345678;
+        let right: int = 0x00ff00ff;
+        if (left & right) == 0x00340078 { put 'A'; }
+        if (left | right) == 0x12ff56ff { put 'B'; }
+        if (left ^ right) == 0x12cb5687 { put 'C'; }
+        if (~left) == 0xedcba987 { put 'D'; }
+
+        let negative: int = -1;
+        let zero: int = 0;
+        let minimum: int = 0x80000000;
+        let maximum: int = 0x7fffffff;
+        if negative < zero { put 'E'; }
+        if zero > negative { put 'F'; }
+        if minimum < negative { put 'G'; }
+        if maximum >= zero { put 'H'; }
+        if negative <= negative { put 'I'; }
+        if negative && maximum { put 'J'; }
+        if zero || maximum { put 'K'; }
+        if !zero { put 'L'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCDEFGHIJKL");
+}
+
+#[test]
+fn int_shifts_cross_cells_and_preserve_sign() {
+    let src = "
+        let value: int = 1;
+        value = value << 8;
+        if value == 256 { put 'A'; }
+        value = value << 16;
+        if value == 0x01000000 { put 'B'; }
+        value = value >> 20;
+        if value == 16 { put 'C'; }
+
+        let negative: int = 0x80000000;
+        negative = negative >> 31;
+        if negative == 0xffffffff { put 'D'; }
+
+        let zeroed: int = 0x12345678 << 32;
+        if zeroed == 0 { put 'E'; }
+        let signed: int = -2;
+        signed = signed >> 1;
+        if signed == -1 { put 'F'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCDEF");
+}
+
+#[test]
 fn scratch_starts_after_globals() {
     let tokens = lexer::lex("let x: byte;").unwrap();
     let mut parser = parser::Parser::new(tokens);

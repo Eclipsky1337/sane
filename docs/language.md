@@ -151,7 +151,9 @@ false // 0
 
 `int` is a signed 32-bit two's-complement value stored in four little-endian
 cells. Current int arithmetic wraps modulo 2^32. Addition, subtraction,
-negation, equality, inequality, and use as a condition are implemented.
+negation, signed comparisons, logical and bitwise operations, shifts, and use
+as a condition are implemented. Right shift is arithmetic and preserves the
+sign bit.
 
 Bytes widen to ints implicitly. Narrowing requires an explicit cast:
 
@@ -371,9 +373,8 @@ x % 0 == x
 
 ## Current Limits
 
-- `int` multiplication, division, remainder, ordering comparisons, bitwise
-  operations, shifts, decimal I/O, function values, and arrays are not yet
-  implemented.
+- `int` multiplication, division, remainder, decimal I/O, function values, and
+  arrays are not yet implemented.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
 - Function parameters and return values remain bytes; top-level and block-local

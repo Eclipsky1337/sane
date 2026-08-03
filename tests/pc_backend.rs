@@ -156,6 +156,14 @@ fn pc_backend_runs_int_add_sub_and_equality() {
 }
 
 #[test]
+fn pc_backend_runs_int_bitwise_and_signed_ordering() {
+    let bf = compile_pc(
+        "let x: int = -1; let y: int = 0x0f0f0f0f; if x < 0 { put 'A'; } if (x & y) == y { put 'B'; } if 0x80000000 < x { put 'C'; }",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"ABC");
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

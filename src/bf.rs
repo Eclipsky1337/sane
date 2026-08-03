@@ -614,20 +614,28 @@ fn emit_expr_to(
             value_type: ValueType::Int,
         };
         emit_int_to(expr, layout, out)?;
+        let tmp = alloc_temp(&[dst])?;
         out.clear(dst);
         for cell in layout.cells() {
-            out.copy_add(cell, dst, T0);
+            out.copy_add(cell, dst, tmp);
         }
-        out.boolify(dst, T0);
+        out.boolify(dst, tmp);
         out.free_control_cells(4);
         return Ok(());
     }
 
     if let Expr::Binary { left, op, right } = expr
-        && matches!(op, BinOp::Eq | BinOp::Ne)
+        && matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        )
         && (left.value_type() == ValueType::Int || right.value_type() == ValueType::Int)
     {
-        emit_int_equality(left, right, *op, dst, out)?;
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            emit_int_equality(left, right, *op, dst, out)?;
+        } else {
+            emit_int_ordering(left, right, *op, dst, out)?;
+        }
         return Ok(());
     }
 
@@ -1020,6 +1028,23 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
         } => {
             emit_int_add_sub(&Expr::Int(0), expr, BinOp::Sub, dst, out)?;
         }
+        Expr::Unary {
+            op: UnOp::BitNot,
+            expr,
+        } => {
+            emit_int_to(expr, dst, out)?;
+            for cell in dst.cells() {
+                out.rsub_const(cell, 255, T0);
+            }
+        }
+        Expr::Binary { left, op, right }
+            if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) =>
+        {
+            emit_int_bitwise(left, right, *op, dst, out)?;
+        }
+        Expr::Binary { left, op, right } if matches!(op, BinOp::Shl | BinOp::Shr) => {
+            emit_int_shift(left, right, *op, dst, out)?;
+        }
         _ => return Err("int expression is not implemented in codegen yet".to_string()),
     }
     Ok(())
@@ -1104,6 +1129,7 @@ fn emit_int_equality(
     dst: usize,
     out: &mut BfOut,
 ) -> Result<(), String> {
+    let tmp = alloc_temp(&[dst])?;
     let left_base = out.alloc_control_cell();
     for _ in 1..8 {
         out.alloc_control_cell();
@@ -1123,15 +1149,168 @@ fn emit_int_equality(
     for offset in 0..4 {
         out.clear(out.w(6));
         out.clear(out.w(7));
-        out.copy_add(left_layout.base + offset, out.w(6), T0);
-        out.copy_add(right_layout.base + offset, out.w(7), T0);
+        out.copy_add(left_layout.base + offset, out.w(6), tmp);
+        out.copy_add(right_layout.base + offset, out.w(7), tmp);
         out.eq(out.w(6), out.w(7));
-        out.bool_and(dst, out.w(6), T0);
+        out.bool_and(dst, out.w(6), tmp);
     }
     if op == BinOp::Ne {
-        out.logical_not(dst, T0);
+        out.logical_not(dst, tmp);
     }
     out.free_control_cells(8);
+    Ok(())
+}
+
+fn emit_int_bitwise(
+    left: &Expr,
+    right: &Expr,
+    op: BinOp,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let rhs_base = out.alloc_control_cell();
+    for _ in 1..4 {
+        out.alloc_control_cell();
+    }
+    let rhs = ValueLayout {
+        base: rhs_base,
+        value_type: ValueType::Int,
+    };
+    emit_int_to(right, rhs, out)?;
+    emit_int_to(left, dst, out)?;
+    let bit_op = match op {
+        BinOp::BitAnd => BitOp::And,
+        BinOp::BitOr => BitOp::Or,
+        BinOp::BitXor => BitOp::Xor,
+        _ => unreachable!(),
+    };
+    for offset in 0..4 {
+        out.bitwise(dst.base + offset, rhs.base + offset, bit_op);
+    }
+    out.free_control_cells(4);
+    Ok(())
+}
+
+fn emit_int_ordering(
+    left: &Expr,
+    right: &Expr,
+    op: BinOp,
+    dst: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let reverse = matches!(op, BinOp::Gt | BinOp::Le);
+    let negate = matches!(op, BinOp::Le | BinOp::Ge);
+    let (left, right) = if reverse {
+        (right, left)
+    } else {
+        (left, right)
+    };
+
+    let left_base = out.alloc_control_cell();
+    for _ in 1..9 {
+        out.alloc_control_cell();
+    }
+    let left_layout = ValueLayout {
+        base: left_base,
+        value_type: ValueType::Int,
+    };
+    let right_layout = ValueLayout {
+        base: left_base + 4,
+        value_type: ValueType::Int,
+    };
+    let tmp = alloc_temp(&[dst])?;
+    let undecided = left_base + 8;
+    emit_int_to(left, left_layout, out)?;
+    emit_int_to(right, right_layout, out)?;
+    out.clear(dst);
+    out.clear(undecided);
+    out.add_const(undecided, 1);
+
+    for offset in (0..4).rev() {
+        out.clear(out.w(4));
+        out.clear(out.w(5));
+        out.copy_add(left_layout.base + offset, out.w(4), tmp);
+        out.copy_add(right_layout.base + offset, out.w(5), tmp);
+        if offset == 3 {
+            out.add_const(out.w(4), 128);
+            out.add_const(out.w(5), 128);
+        }
+        out.less_cells(out.w(4), out.w(5), out.w(6));
+        out.clear(out.w(7));
+        out.copy_add(undecided, out.w(7), tmp);
+        out.bool_and(out.w(7), out.w(6), tmp);
+        out.move_add(out.w(7), dst);
+        out.boolify(dst, tmp);
+
+        out.clear(out.w(4));
+        out.clear(out.w(5));
+        out.copy_add(left_layout.base + offset, out.w(4), tmp);
+        out.copy_add(right_layout.base + offset, out.w(5), tmp);
+        out.eq(out.w(4), out.w(5));
+        out.bool_and(undecided, out.w(4), tmp);
+    }
+
+    if negate {
+        out.logical_not(dst, tmp);
+    }
+    out.free_control_cells(9);
+    Ok(())
+}
+
+fn emit_int_shift(
+    value: &Expr,
+    count: &Expr,
+    op: BinOp,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let count_cell = out.alloc_control_cell();
+    let carry = out.alloc_control_cell();
+    let next_carry = out.alloc_control_cell();
+    emit_expr_to(count, count_cell, out, &[count_cell])?;
+    emit_int_to(value, dst, out)?;
+
+    out.goto(count_cell);
+    out.code.push('[');
+    out.sub_const(count_cell, 1);
+    match op {
+        BinOp::Shl => {
+            out.clear(carry);
+            for offset in 0..4 {
+                out.clear(next_carry);
+                out.clear(out.w(6));
+                out.copy_add(dst.base + offset, out.w(6), T0);
+                out.divmod_const(out.w(6), 128, DivModResult::Quotient);
+                out.move_add(out.w(6), next_carry);
+                out.mul_const(dst.base + offset, 2, T0);
+                out.move_add(carry, dst.base + offset);
+                out.move_add(next_carry, carry);
+            }
+        }
+        BinOp::Shr => {
+            out.clear(carry);
+            out.clear(out.w(6));
+            out.copy_add(dst.base + 3, out.w(6), T0);
+            out.divmod_const(out.w(6), 128, DivModResult::Quotient);
+            out.mul_const(out.w(6), 128, T0);
+            out.move_add(out.w(6), carry);
+            for offset in (0..4).rev() {
+                out.clear(next_carry);
+                out.clear(out.w(6));
+                out.copy_add(dst.base + offset, out.w(6), T0);
+                out.divmod_const(out.w(6), 2, DivModResult::Remainder);
+                out.mul_const(out.w(6), 128, T0);
+                out.move_add(out.w(6), next_carry);
+                out.divmod_const(dst.base + offset, 2, DivModResult::Quotient);
+                out.move_add(carry, dst.base + offset);
+                out.move_add(next_carry, carry);
+            }
+        }
+        _ => unreachable!(),
+    }
+    out.goto(count_cell);
+    out.code.push(']');
+    out.free_control_cells(3);
     Ok(())
 }
 

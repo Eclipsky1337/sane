@@ -188,8 +188,9 @@ impl ResolvedExpr {
             Self::Int(_) => ValueType::Int,
             Self::Var(layout) => layout.value_type,
             Self::Unary { op, expr } => match op {
+                UnOp::Not => ValueType::Byte,
                 UnOp::Neg => ValueType::Int,
-                _ => expr.value_type(),
+                UnOp::BitNot => expr.value_type(),
             },
             Self::Binary {
                 left, op, right, ..
@@ -809,6 +810,12 @@ impl Resolver {
                         }
                     }
                 }
+                if *op == UnOp::BitNot || *op == UnOp::Not {
+                    return Ok(ResolvedExpr::Unary {
+                        op: *op,
+                        expr: Box::new(expr),
+                    });
+                }
                 self.require_byte(&expr, *span, "unary operator")?;
                 Ok(ResolvedExpr::Unary {
                     op: *op,
@@ -822,9 +829,37 @@ impl Resolver {
                 let right = self.resolve_expr(right)?;
                 let has_int =
                     left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
-                if has_int && !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Eq | BinOp::Ne) {
+                if has_int
+                    && !matches!(
+                        op,
+                        BinOp::Add
+                            | BinOp::Sub
+                            | BinOp::Eq
+                            | BinOp::Ne
+                            | BinOp::Lt
+                            | BinOp::Le
+                            | BinOp::Gt
+                            | BinOp::Ge
+                            | BinOp::BitAnd
+                            | BinOp::BitOr
+                            | BinOp::BitXor
+                            | BinOp::Shl
+                            | BinOp::Shr
+                            | BinOp::And
+                            | BinOp::Or
+                    )
+                {
                     return Err(Diagnostic::new(
                         "this int binary operation is not implemented yet",
+                        expr.span(),
+                    ));
+                }
+                if has_int
+                    && matches!(op, BinOp::Shl | BinOp::Shr)
+                    && right.value_type() != ValueType::Byte
+                {
+                    return Err(Diagnostic::new(
+                        "int shift counts must be byte values",
                         expr.span(),
                     ));
                 }
