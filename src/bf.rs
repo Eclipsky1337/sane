@@ -1279,7 +1279,7 @@ fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), Str
         Expr::Binary { left, op, right } if matches!(op, BinOp::Shl | BinOp::Shr) => {
             emit_int_shift(left, right, *op, dst, out)?;
         }
-        _ => return Err("int expression is not implemented in codegen yet".to_string()),
+        _ => return Err("internal error: unsupported int expression reached codegen".to_string()),
     }
     Ok(())
 }
