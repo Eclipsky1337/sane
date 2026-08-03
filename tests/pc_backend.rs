@@ -2,16 +2,87 @@ mod common;
 
 use std::fs;
 
-use sane::{bf, lexer, parser, sema};
+use sane::{bf, ir, lexer, parser, sema};
 
 use common::run_bf;
 
-fn compile_pc(src: &str) -> String {
+fn resolve(src: &str) -> sema::ResolvedProgram {
     let tokens = lexer::lex(src).unwrap();
     let mut parser = parser::Parser::new(tokens);
     let program = parser.parse_program().unwrap();
-    let program = sema::resolve(&program).unwrap();
-    bf::compile_pc(&program).unwrap()
+    sema::resolve(&program).unwrap()
+}
+
+fn compile_pc(src: &str) -> String {
+    bf::compile_pc(&resolve(src)).unwrap()
+}
+
+fn assert_stats_within(actual: ir::IrStats, maximum: ir::IrStats) {
+    assert!(actual.blocks <= maximum.blocks, "{actual:?}");
+    assert!(
+        actual.reachable_blocks <= maximum.reachable_blocks,
+        "{actual:?}"
+    );
+    assert!(actual.ops <= maximum.ops, "{actual:?}");
+    assert!(actual.empty_blocks <= maximum.empty_blocks, "{actual:?}");
+    assert!(actual.trivial_jumps <= maximum.trivial_jumps, "{actual:?}");
+    assert!(actual.calls <= maximum.calls, "{actual:?}");
+    assert!(actual.branches <= maximum.branches, "{actual:?}");
+}
+
+#[test]
+fn ir_stats_classify_control_flow_and_reachability() {
+    let program = ir::Program {
+        blocks: vec![
+            ir::Block {
+                ops: vec![ir::Op::Puts(b"entry".to_vec())],
+                terminator: ir::Terminator::Branch {
+                    cond: sema::ResolvedExpr::Byte(1),
+                    then_target: ir::BlockId(1),
+                    else_target: ir::BlockId(2),
+                },
+            },
+            ir::Block {
+                ops: Vec::new(),
+                terminator: ir::Terminator::Call {
+                    function: 0,
+                    args: Vec::new(),
+                    return_target: ir::BlockId(3),
+                },
+            },
+            ir::Block {
+                ops: Vec::new(),
+                terminator: ir::Terminator::Jump(ir::BlockId(3)),
+            },
+            ir::Block {
+                ops: vec![ir::Op::Puts(b"done".to_vec())],
+                terminator: ir::Terminator::Halt,
+            },
+            ir::Block {
+                ops: Vec::new(),
+                terminator: ir::Terminator::ReturnValue,
+            },
+            ir::Block {
+                ops: Vec::new(),
+                terminator: ir::Terminator::Jump(ir::BlockId(5)),
+            },
+        ],
+        entry: ir::BlockId(0),
+        function_entries: vec![ir::BlockId(4)],
+    };
+
+    assert_eq!(
+        program.stats(),
+        ir::IrStats {
+            blocks: 6,
+            reachable_blocks: 5,
+            ops: 2,
+            empty_blocks: 4,
+            trivial_jumps: 2,
+            calls: 1,
+            branches: 1,
+        }
+    );
 }
 
 #[test]
@@ -273,5 +344,38 @@ step 13: 8\n\
 step 14: 4\n\
 step 15: 2\n\
 step 16: 1\n"
+    );
+}
+
+#[test]
+fn reference_examples_keep_ir_size_within_baseline_bounds() {
+    let toy_aes = fs::read_to_string("examples/toy_aes_round.sn").unwrap();
+    let toy_aes_stats = ir::lower(&resolve(&toy_aes)).stats();
+    assert_stats_within(
+        toy_aes_stats,
+        ir::IrStats {
+            blocks: 50,
+            reachable_blocks: 50,
+            ops: 120,
+            empty_blocks: 20,
+            trivial_jumps: 4,
+            calls: 0,
+            branches: 20,
+        },
+    );
+
+    let collatz = fs::read_to_string("examples/Collatz.sn").unwrap();
+    let collatz_stats = ir::lower(&resolve(&collatz)).stats();
+    assert_stats_within(
+        collatz_stats,
+        ir::IrStats {
+            blocks: 30,
+            reachable_blocks: 24,
+            ops: 20,
+            empty_blocks: 22,
+            trivial_jumps: 14,
+            calls: 8,
+            branches: 12,
+        },
     );
 }

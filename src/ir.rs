@@ -8,6 +8,79 @@ pub struct Program {
     pub function_entries: Vec<BlockId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrStats {
+    pub blocks: usize,
+    pub reachable_blocks: usize,
+    pub ops: usize,
+    pub empty_blocks: usize,
+    pub trivial_jumps: usize,
+    pub calls: usize,
+    pub branches: usize,
+}
+
+impl Program {
+    pub fn stats(&self) -> IrStats {
+        let mut reachable = vec![false; self.blocks.len()];
+        let mut pending = vec![self.entry];
+
+        while let Some(block_id) = pending.pop() {
+            if reachable[block_id.0] {
+                continue;
+            }
+            reachable[block_id.0] = true;
+
+            match &self.blocks[block_id.0].terminator {
+                Terminator::Jump(target) => pending.push(*target),
+                Terminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(*then_target);
+                    pending.push(*else_target);
+                }
+                Terminator::Call {
+                    function,
+                    return_target,
+                    ..
+                } => {
+                    pending.push(self.function_entries[*function]);
+                    pending.push(*return_target);
+                }
+                Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
+            }
+        }
+
+        IrStats {
+            blocks: self.blocks.len(),
+            reachable_blocks: reachable.into_iter().filter(|reachable| *reachable).count(),
+            ops: self.blocks.iter().map(|block| block.ops.len()).sum(),
+            empty_blocks: self
+                .blocks
+                .iter()
+                .filter(|block| block.ops.is_empty())
+                .count(),
+            trivial_jumps: self
+                .blocks
+                .iter()
+                .filter(|block| block.ops.is_empty())
+                .filter(|block| matches!(block.terminator, Terminator::Jump(_)))
+                .count(),
+            calls: self
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.terminator, Terminator::Call { .. }))
+                .count(),
+            branches: self
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.terminator, Terminator::Branch { .. }))
+                .count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub ops: Vec<Op>,

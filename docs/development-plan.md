@@ -14,6 +14,10 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [x] Phase 1.6: typed decimal and raw-byte format placeholders
 - [x] Release 1.2: version, documentation, validation, and tag
 - [ ] Phase 2: P1 PC measurement and optimization
+  - [x] IR statistics and upper-bound regression tests
+  - [ ] reproducible benchmarks
+  - [ ] superblocks and fallthrough
+  - [ ] dispatcher strategy evaluation
 - [ ] Phase 3: P3 item 13 debug symbols
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
@@ -455,4 +459,4 @@ Do not include these features without a new design discussion:
 - a multi-cell PC
 - a standard library
 
-The next session should begin with Phase 2 item 5: IR statistics.
+The next session should begin with Phase 2 item 6: reproducible benchmarks.
