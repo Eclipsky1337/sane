@@ -1,8 +1,23 @@
 mod common;
 
 use common::run_bf;
+use sane::ast::ValueType;
 use sane::{compile_source, compile_source_with_path};
 use sane::{lexer, parser, sema};
+
+#[test]
+fn scalar_types_define_byte_and_int_storage_widths() {
+    let byte = sema::ValueLayout::byte(8);
+    let int = sema::ValueLayout {
+        base: 12,
+        value_type: ValueType::Int,
+    };
+
+    assert_eq!(ValueType::Byte.cell_width(), 1);
+    assert_eq!(ValueType::Int.cell_width(), 4);
+    assert_eq!(byte.cells(), 8..9);
+    assert_eq!(int.cells(), 12..16);
+}
 
 #[test]
 fn scratch_starts_after_globals() {
@@ -12,6 +27,10 @@ fn scratch_starts_after_globals() {
     let symbols = sema::analyze(&program).unwrap();
 
     assert_eq!(symbols.cell("x"), Some(sema::TEMP_COUNT));
+    assert_eq!(
+        symbols.layout("x"),
+        Some(sema::ValueLayout::byte(sema::TEMP_COUNT))
+    );
     assert_eq!(sema::TEMP_COUNT, 8);
     assert_eq!(symbols.scratch_base(), 9);
     assert_eq!(symbols.control_base(), 21);

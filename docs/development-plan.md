@@ -21,7 +21,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [ ] Phase 3: P3 item 13 debug symbols
 - [ ] Phase 4: 32-bit signed integers
   - [x] representation and language design
-  - [ ] scalar type and storage layout
+  - [x] scalar type and storage layout
   - [ ] literals, declarations, assignment, and casts
   - [ ] core arithmetic and comparisons
   - [ ] functions, I/O, and arrays

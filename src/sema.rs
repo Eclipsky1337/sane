@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::{
     ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Program, ReturnType, Stmt, UnOp,
+    ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 
@@ -9,9 +10,33 @@ pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
 pub const MAX_CALL_DEPTH: usize = 16;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueLayout {
+    pub base: usize,
+    pub value_type: ValueType,
+}
+
+impl ValueLayout {
+    pub const fn byte(base: usize) -> Self {
+        Self {
+            base,
+            value_type: ValueType::Byte,
+        }
+    }
+
+    pub const fn cell_width(self) -> usize {
+        self.value_type.cell_width()
+    }
+
+    pub fn cells(self) -> std::ops::Range<usize> {
+        self.base..self.base + self.cell_width()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Symbols {
     cells: HashMap<String, usize>,
+    layouts: HashMap<String, ValueLayout>,
     entries: Vec<SymbolInfo>,
     scratch_base: usize,
 }
@@ -19,6 +44,10 @@ pub struct Symbols {
 impl Symbols {
     pub fn cell(&self, name: &str) -> Option<usize> {
         self.cells.get(name).copied()
+    }
+
+    pub fn layout(&self, name: &str) -> Option<ValueLayout> {
+        self.layouts.get(name).copied()
     }
 
     pub fn scratch_base(&self) -> usize {
@@ -172,6 +201,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
         spills,
         symbols: Symbols {
             cells: resolver.public_cells,
+            layouts: resolver.public_layouts,
             entries: resolver.public_entries,
             scratch_base: resolver.high_water,
         },
@@ -187,13 +217,14 @@ struct Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Symbol {
     Const { value: u8, declared_at: usize },
-    Scalar(usize),
+    Scalar(ValueLayout),
     Array { base: usize, len: usize },
 }
 
 struct Resolver {
     scopes: Vec<Scope>,
     public_cells: HashMap<String, usize>,
+    public_layouts: HashMap<String, ValueLayout>,
     public_entries: Vec<SymbolInfo>,
     functions: HashMap<String, usize>,
     function_names: Vec<String>,
@@ -212,6 +243,7 @@ impl Resolver {
         Self {
             scopes: vec![Scope::default()],
             public_cells: HashMap::new(),
+            public_layouts: HashMap::new(),
             public_entries: Vec::new(),
             functions: HashMap::new(),
             function_names: Vec::new(),
@@ -259,12 +291,12 @@ impl Resolver {
                         param.name_span,
                     ));
                 }
-                let cell = self.alloc_fresh_cell();
+                let layout = self.alloc_fresh_value(ValueType::Byte);
                 self.current_scope_mut()
                     .names
-                    .insert(param.name.clone(), Symbol::Scalar(cell));
-                self.current_scope_mut().owned_cells.push(cell);
-                params.push(cell);
+                    .insert(param.name.clone(), Symbol::Scalar(layout));
+                self.current_scope_mut().owned_cells.extend(layout.cells());
+                params.push(layout.base);
             }
             let previous = self.current_function.replace(index);
             let previous_start = self.current_function_start.replace(function.span.start);
@@ -413,14 +445,15 @@ impl Resolver {
                     .as_ref()
                     .map(|expr| self.resolve_expr(expr))
                     .transpose()?;
-                let cell = self.alloc_scope_cell();
+                let layout = self.alloc_scope_value(ValueType::Byte);
+                let cell = layout.base;
                 self.current_scope_mut()
                     .names
-                    .insert(name.clone(), Symbol::Scalar(cell));
-                self.current_scope_mut().owned_cells.push(cell);
-                self.define_public_symbol(
+                    .insert(name.clone(), Symbol::Scalar(layout));
+                self.current_scope_mut().owned_cells.extend(layout.cells());
+                self.define_public_scalar(
                     name,
-                    cell,
+                    layout,
                     SymbolInfo::Scalar {
                         name: name.clone(),
                         cell,
@@ -645,7 +678,7 @@ impl Resolver {
             Expr::Var(name, span) => {
                 match self.lookup_symbol(name, *span, "use of undeclared variable")? {
                     Symbol::Const { value, .. } => Ok(ResolvedExpr::Byte(value)),
-                    Symbol::Scalar(cell) => Ok(ResolvedExpr::Var(cell)),
+                    Symbol::Scalar(layout) => Ok(ResolvedExpr::Var(layout.base)),
                     Symbol::Array { .. } => {
                         Err(Diagnostic::new(format!("`{name}` is an array"), *span))
                     }
@@ -871,7 +904,7 @@ impl Resolver {
 
     fn lookup_scalar(&self, name: &str, span: Span, prefix: &str) -> Result<usize, Diagnostic> {
         match self.lookup_symbol(name, span, prefix)? {
-            Symbol::Scalar(cell) => Ok(cell),
+            Symbol::Scalar(layout) => Ok(layout.base),
             Symbol::Const { .. } => Err(Diagnostic::new(format!("`{name}` is a constant"), span)),
             Symbol::Array { .. } => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
         }
@@ -886,22 +919,24 @@ impl Resolver {
         }
     }
 
-    fn alloc_scope_cell(&mut self) -> usize {
-        if self.current_function.is_some() {
-            return self.alloc_fresh_cell();
+    fn alloc_scope_value(&mut self, value_type: ValueType) -> ValueLayout {
+        if self.current_function.is_some() || value_type.cell_width() != 1 {
+            return self.alloc_fresh_value(value_type);
         }
-        if let Some(cell) = self.free_cells.pop() {
-            cell
+        if let Some(base) = self.free_cells.pop() {
+            ValueLayout { base, value_type }
         } else {
-            self.alloc_fresh_cell()
+            self.alloc_fresh_value(value_type)
         }
     }
 
     fn alloc_fresh_cell(&mut self) -> usize {
-        let cell = self.next_cell;
-        self.next_cell += 1;
-        self.high_water = self.high_water.max(self.next_cell);
-        cell
+        self.alloc_fresh_value(ValueType::Byte).base
+    }
+
+    fn alloc_fresh_value(&mut self, value_type: ValueType) -> ValueLayout {
+        let base = self.alloc_fresh_block(value_type.cell_width());
+        ValueLayout { base, value_type }
     }
 
     fn alloc_scope_block(&mut self, len: usize) -> usize {
@@ -940,6 +975,18 @@ impl Resolver {
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("resolver always has a scope")
+    }
+
+    fn define_public_scalar(&mut self, name: &str, layout: ValueLayout, info: SymbolInfo) {
+        if self.scopes.len() != 1 {
+            return;
+        }
+        if self.public_cells.contains_key(name) {
+            return;
+        }
+        self.public_cells.insert(name.to_string(), layout.base);
+        self.public_layouts.insert(name.to_string(), layout);
+        self.public_entries.push(info);
     }
 
     fn define_public_symbol(&mut self, name: &str, cell: usize, info: SymbolInfo) {

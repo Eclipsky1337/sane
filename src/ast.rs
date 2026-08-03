@@ -17,6 +17,21 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueType {
+    Byte,
+    Int,
+}
+
+impl ValueType {
+    pub const fn cell_width(self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Int => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnType {
     Void,
     Byte,
