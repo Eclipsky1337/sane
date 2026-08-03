@@ -1,5 +1,6 @@
 use crate::ast::{
     ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, Param, Program, ReturnType, Stmt, UnOp,
+    ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -112,13 +113,18 @@ impl Parser {
     fn parse_let_with_semi(&mut self, semi: bool) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::Let)?.span;
         let (name, name_span) = self.expect_ident()?;
-        let typed = if self.match_kind(TokenKind::Colon) {
-            self.expect(TokenKind::ByteTy)?;
-            true
+        let value_type = if self.match_kind(TokenKind::Colon) {
+            Some(self.parse_value_type()?)
         } else {
-            false
+            None
         };
-        if typed && self.match_kind(TokenKind::LBracket) {
+        if value_type.is_some() && self.match_kind(TokenKind::LBracket) {
+            if value_type != Some(ValueType::Byte) {
+                return Err(Diagnostic::new(
+                    "int arrays are not implemented yet",
+                    name_span,
+                ));
+            }
             let len_expr = self.parse_expr()?;
             self.expect(TokenKind::RBracket)?;
             let init = if self.match_kind(TokenKind::Eq) {
@@ -141,7 +147,7 @@ impl Parser {
             });
         }
         let init = if self.match_kind(TokenKind::Eq) {
-            if !typed
+            if value_type.is_none()
                 && (self.at(TokenKind::LBracket) || matches!(self.peek(), TokenKind::StringLit(_)))
             {
                 let init = self.parse_array_initializer()?;
@@ -166,7 +172,7 @@ impl Parser {
                 });
             }
             Some(self.parse_expr()?)
-        } else if typed {
+        } else if value_type.is_some() {
             None
         } else {
             return Err(Diagnostic::new(
@@ -182,6 +188,7 @@ impl Parser {
         Ok(Stmt::Let {
             name,
             name_span,
+            value_type,
             init,
             span: start.join(end),
         })
@@ -687,16 +694,41 @@ impl Parser {
                 span,
             });
         }
-        self.parse_primary()
+        if let Some(op_span) = self.match_token(TokenKind::Minus) {
+            let expr = self.parse_unary()?;
+            let span = op_span.join(expr.span());
+            return Ok(Expr::Unary {
+                op: UnOp::Neg,
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        self.parse_cast()
+    }
+
+    fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_primary()?;
+        while self.match_kind(TokenKind::As) {
+            let target = self.parse_value_type()?;
+            let span = expr.span().join(self.tokens[self.current - 1].span);
+            expr = Expr::Cast {
+                expr: Box::new(expr),
+                target,
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.advance_token().clone();
         match token.kind {
             TokenKind::Number(n) => {
-                let value = u8::try_from(n)
-                    .map_err(|_| Diagnostic::new("byte literal out of range", token.span))?;
-                Ok(Expr::Byte(value, token.span))
+                if let Ok(value) = u8::try_from(n) {
+                    Ok(Expr::Byte(value, token.span))
+                } else {
+                    Ok(Expr::Int(n, token.span))
+                }
             }
             TokenKind::True => Ok(Expr::Byte(1, token.span)),
             TokenKind::False => Ok(Expr::Byte(0, token.span)),
@@ -751,6 +783,18 @@ impl Parser {
             TokenKind::Ident(name) => Ok((name, token.span)),
             kind => Err(Diagnostic::new(
                 format!("expected identifier, found {kind:?}"),
+                token.span,
+            )),
+        }
+    }
+
+    fn parse_value_type(&mut self) -> Result<ValueType, Diagnostic> {
+        let token = self.advance_token().clone();
+        match token.kind {
+            TokenKind::ByteTy => Ok(ValueType::Byte),
+            TokenKind::IntTy => Ok(ValueType::Int),
+            kind => Err(Diagnostic::new(
+                format!("expected value type, found {kind:?}"),
                 token.span,
             )),
         }

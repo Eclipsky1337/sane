@@ -432,12 +432,19 @@ impl Resolver {
             Stmt::Let {
                 name,
                 name_span,
+                value_type,
                 init,
                 ..
             } => {
                 if self.current_scope().names.contains_key(name) {
                     return Err(Diagnostic::new(
                         format!("variable `{name}` already declared in this scope"),
+                        *name_span,
+                    ));
+                }
+                if *value_type == Some(ValueType::Int) {
+                    return Err(Diagnostic::new(
+                        "int variables are parsed but not lowered yet",
                         *name_span,
                     ));
                 }
@@ -675,6 +682,10 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) -> Result<ResolvedExpr, Diagnostic> {
         match expr {
             Expr::Byte(value, _) => Ok(ResolvedExpr::Byte(*value)),
+            Expr::Int(_, span) => Err(Diagnostic::new(
+                "int expressions are parsed but not lowered yet",
+                *span,
+            )),
             Expr::Var(name, span) => {
                 match self.lookup_symbol(name, *span, "use of undeclared variable")? {
                     Symbol::Const { value, .. } => Ok(ResolvedExpr::Byte(value)),
@@ -713,6 +724,14 @@ impl Resolver {
                 }
                 Ok(ResolvedExpr::Call { function, args })
             }
+            Expr::Unary {
+                op: UnOp::Neg,
+                span,
+                ..
+            } => Err(Diagnostic::new(
+                "negative int expressions are parsed but not lowered yet",
+                *span,
+            )),
             Expr::Unary { op, expr, .. } => Ok(ResolvedExpr::Unary {
                 op: *op,
                 expr: Box::new(self.resolve_expr(expr)?),
@@ -724,6 +743,10 @@ impl Resolver {
                 op: *op,
                 right: Box::new(self.resolve_expr(right)?),
             }),
+            Expr::Cast { span, .. } => Err(Diagnostic::new(
+                "integer casts are parsed but not lowered yet",
+                *span,
+            )),
         }
     }
 
@@ -849,6 +872,10 @@ impl Resolver {
     fn eval_const_expr(&self, expr: &Expr) -> Result<u8, Diagnostic> {
         match expr {
             Expr::Byte(value, _) => Ok(*value),
+            Expr::Int(_, span) => Err(Diagnostic::new(
+                "int constants are not implemented yet",
+                *span,
+            )),
             Expr::Var(name, span) => match self.lookup_symbol(
                 name,
                 *span,
@@ -872,6 +899,14 @@ impl Resolver {
                 "constant expression cannot call a function",
                 *span,
             )),
+            Expr::Unary {
+                op: UnOp::Neg,
+                span,
+                ..
+            } => Err(Diagnostic::new(
+                "negative int constants are not implemented yet",
+                *span,
+            )),
             Expr::Unary { op, expr, .. } => Ok(eval_const_unary(*op, self.eval_const_expr(expr)?)),
             Expr::Binary {
                 left, op, right, ..
@@ -879,6 +914,10 @@ impl Resolver {
                 self.eval_const_expr(left)?,
                 *op,
                 self.eval_const_expr(right)?,
+            )),
+            Expr::Cast { span, .. } => Err(Diagnostic::new(
+                "integer casts are not implemented yet",
+                *span,
             )),
         }
     }
@@ -1005,6 +1044,7 @@ fn eval_const_unary(op: UnOp, value: u8) -> u8 {
     match op {
         UnOp::Not => u8::from(value == 0),
         UnOp::BitNot => !value,
+        UnOp::Neg => 0u8.wrapping_sub(value),
     }
 }
 

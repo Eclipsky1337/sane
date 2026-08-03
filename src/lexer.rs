@@ -20,6 +20,8 @@ pub enum TokenKind {
     Break,
     Continue,
     ByteTy,
+    IntTy,
+    As,
     Put,
     Puts,
     Print,
@@ -28,7 +30,7 @@ pub enum TokenKind {
     True,
     False,
     Ident(String),
-    Number(u16),
+    Number(u32),
     StringLit(Vec<u8>),
     Colon,
     Comma,
@@ -193,7 +195,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 let value = read_char_escape(&mut chars, pos)?;
                 match chars.next() {
                     Some((end, '\'')) => {
-                        tokens.push(tok(TokenKind::Number(value as u16), pos, end + 1))
+                        tokens.push(tok(TokenKind::Number(value as u32), pos, end + 1))
                     }
                     _ => {
                         return Err(Diagnostic::new(
@@ -248,6 +250,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                     "break" => TokenKind::Break,
                     "continue" => TokenKind::Continue,
                     "byte" => TokenKind::ByteTy,
+                    "int" => TokenKind::IntTy,
+                    "as" => TokenKind::As,
                     "put" => TokenKind::Put,
                     "puts" => TokenKind::Puts,
                     "print" => TokenKind::Print,
@@ -341,7 +345,7 @@ where
         }
     }
 
-    let value = u16::from_str_radix(digits, radix).map_err(|_| {
+    let value = u32::from_str_radix(digits, radix).map_err(|_| {
         Diagnostic::new(
             "numeric literal is too large",
             Span::new(

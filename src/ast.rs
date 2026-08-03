@@ -60,6 +60,7 @@ pub enum Stmt {
     Let {
         name: String,
         name_span: Span,
+        value_type: Option<ValueType>,
         init: Option<Expr>,
         span: Span,
     },
@@ -168,6 +169,7 @@ impl ArrayInit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Byte(u8, Span),
+    Int(u32, Span),
     Var(String, Span),
     ArrayGet {
         name: String,
@@ -186,6 +188,11 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    Cast {
+        expr: Box<Expr>,
+        target: ValueType,
+        span: Span,
+    },
     Binary {
         left: Box<Expr>,
         op: BinOp,
@@ -197,9 +204,9 @@ pub enum Expr {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
-            Expr::Byte(_, span) | Expr::Var(_, span) => *span,
+            Expr::Byte(_, span) | Expr::Int(_, span) | Expr::Var(_, span) => *span,
             Expr::ArrayGet { span, .. } | Expr::Call { span, .. } => *span,
-            Expr::Unary { span, .. } | Expr::Binary { span, .. } => *span,
+            Expr::Unary { span, .. } | Expr::Binary { span, .. } | Expr::Cast { span, .. } => *span,
         }
     }
 }
@@ -230,4 +237,5 @@ pub enum BinOp {
 pub enum UnOp {
     Not,
     BitNot,
+    Neg,
 }

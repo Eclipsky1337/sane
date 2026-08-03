@@ -639,6 +639,9 @@ fn emit_expr_to(
                     let tmp = alloc_temp(reserved)?;
                     out.rsub_const(dst, 255, tmp);
                 }
+                UnOp::Neg => {
+                    return Err("internal error: int negation reached byte codegen".to_string());
+                }
             }
         }
         Expr::Binary { left, op, right } => {
@@ -861,6 +864,7 @@ fn const_eval(expr: &Expr) -> Option<u8> {
             match op {
                 UnOp::Not => Some(u8::from(value == 0)),
                 UnOp::BitNot => Some(!value),
+                UnOp::Neg => None,
             }
         }
         Expr::Binary { left, op, right } => {

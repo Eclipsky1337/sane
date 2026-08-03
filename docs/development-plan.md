@@ -22,6 +22,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
 - [ ] Phase 4: 32-bit signed integers
   - [x] representation and language design
   - [x] scalar type and storage layout
+  - [x] `int` syntax and 32-bit literal lexing
   - [ ] literals, declarations, assignment, and casts
   - [ ] core arithmetic and comparisons
   - [ ] functions, I/O, and arrays

@@ -1,7 +1,7 @@
 mod common;
 
 use common::run_bf;
-use sane::ast::ValueType;
+use sane::ast::{Expr, Stmt, UnOp, ValueType};
 use sane::{compile_source, compile_source_with_path};
 use sane::{lexer, parser, sema};
 
@@ -17,6 +17,55 @@ fn scalar_types_define_byte_and_int_storage_widths() {
     assert_eq!(ValueType::Int.cell_width(), 4);
     assert_eq!(byte.cells(), 8..9);
     assert_eq!(int.cells(), 12..16);
+}
+
+#[test]
+fn int_declarations_literals_negation_and_casts_parse() {
+    let tokens = lexer::lex(
+        "let bits: int = 0xffffffff; let min = -2147483648; let low: byte = bits as byte;",
+    )
+    .unwrap();
+    let mut parser = parser::Parser::new(tokens);
+    let program = parser.parse_program().unwrap();
+
+    assert!(matches!(
+        &program.stmts[0],
+        Stmt::Let {
+            value_type: Some(ValueType::Int),
+            init: Some(Expr::Int(0xffff_ffff, _)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        &program.stmts[1],
+        Stmt::Let {
+            value_type: None,
+            init: Some(Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            }),
+            ..
+        } if matches!(expr.as_ref(), Expr::Int(2_147_483_648, _))
+    ));
+    assert!(matches!(
+        &program.stmts[2],
+        Stmt::Let {
+            value_type: Some(ValueType::Byte),
+            init: Some(Expr::Cast {
+                target: ValueType::Byte,
+                ..
+            }),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn int_frontend_reports_staged_lowering_and_literal_limits() {
+    let error = compile_source_with_path("let value: int = 300;", "int.sn").unwrap_err();
+    assert!(error.contains("int variables are parsed but not lowered yet"));
+    assert!(lexer::lex("let value = 4294967296;").is_err());
 }
 
 #[test]
