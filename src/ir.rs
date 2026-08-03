@@ -1,5 +1,5 @@
 use crate::ast::ReturnType;
-use crate::sema::{ResolvedExpr, ResolvedProgram, ResolvedStmt};
+use crate::sema::{ResolvedExpr, ResolvedProgram, ResolvedStmt, ValueLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
@@ -195,7 +195,7 @@ pub struct BlockId(pub usize);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Let {
-        cell: usize,
+        layout: ValueLayout,
         init: Option<ResolvedExpr>,
     },
     LetArray {
@@ -204,7 +204,7 @@ pub enum Op {
         init: Vec<u8>,
     },
     Assign {
-        cell: usize,
+        layout: ValueLayout,
         expr: ResolvedExpr,
     },
     ArraySet {
@@ -217,7 +217,7 @@ pub enum Op {
     Puts(Vec<u8>),
     Print(ResolvedExpr),
     Println(ResolvedExpr),
-    Read(usize),
+    Read(ValueLayout),
     ReadArray {
         base: usize,
         len: usize,
@@ -328,14 +328,20 @@ impl Builder {
     ) -> BlockId {
         match stmt {
             ResolvedStmt::Const => current,
-            ResolvedStmt::Let { cell, init } => {
+            ResolvedStmt::Let { layout, init } => {
                 let (current, init) = if let Some(init) = init {
                     let (current, init) = self.lower_expr_calls(current, init);
                     (current, Some(init))
                 } else {
                     (current, None)
                 };
-                self.push_op(current, Op::Let { cell: *cell, init });
+                self.push_op(
+                    current,
+                    Op::Let {
+                        layout: *layout,
+                        init,
+                    },
+                );
                 current
             }
             ResolvedStmt::LetArray { base, len, init } => {
@@ -349,9 +355,15 @@ impl Builder {
                 );
                 current
             }
-            ResolvedStmt::Assign { cell, expr } => {
+            ResolvedStmt::Assign { layout, expr } => {
                 let (current, expr) = self.lower_expr_calls(current, expr);
-                self.push_op(current, Op::Assign { cell: *cell, expr });
+                self.push_op(
+                    current,
+                    Op::Assign {
+                        layout: *layout,
+                        expr,
+                    },
+                );
                 current
             }
             ResolvedStmt::ArraySet {
@@ -392,8 +404,8 @@ impl Builder {
                 self.push_op(current, Op::Println(expr));
                 current
             }
-            ResolvedStmt::Read(cell) => {
-                self.push_op(current, Op::Read(*cell));
+            ResolvedStmt::Read(layout) => {
+                self.push_op(current, Op::Read(*layout));
                 current
             }
             ResolvedStmt::ReadArray { base, len, index } => {
@@ -576,7 +588,9 @@ impl Builder {
         expr: &ResolvedExpr,
     ) -> (BlockId, ResolvedExpr) {
         match expr {
-            ResolvedExpr::Byte(_) | ResolvedExpr::Var(_) => (current, expr.clone()),
+            ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => {
+                (current, expr.clone())
+            }
             ResolvedExpr::ArrayGet { base, len, index } => {
                 let (current, index) = self.lower_expr_calls(current, index);
                 (
@@ -610,6 +624,16 @@ impl Builder {
                     },
                 )
             }
+            ResolvedExpr::Cast { expr, target } => {
+                let (current, expr) = self.lower_expr_calls(current, expr);
+                (
+                    current,
+                    ResolvedExpr::Cast {
+                        expr: Box::new(expr),
+                        target: *target,
+                    },
+                )
+            }
             ResolvedExpr::Call { function, args } => {
                 let mut current = current;
                 let mut lowered_args = Vec::new();
@@ -629,7 +653,7 @@ impl Builder {
                     },
                 );
                 self.push_op(after, Op::StoreReturn(spill));
-                (after, ResolvedExpr::Var(spill))
+                (after, ResolvedExpr::Var(ValueLayout::byte(spill)))
             }
         }
     }

@@ -27,7 +27,8 @@ let x = 65;
 
 The reserved keywords are `let`, `const`, `fn`, `return`, `if`, `else`,
 `while`, `loop`, `for`, `break`, `continue`, `byte`, `put`, `puts`, `print`,
-`println`, `read`, `true`, and `false`. They cannot be used as identifiers.
+`println`, `read`, `int`, `as`, `true`, and `false`. They cannot be used as
+identifiers.
 
 `const` became a reserved keyword in Sane 1.2; older source that used it as an
 identifier must rename that identifier.
@@ -41,9 +42,11 @@ starts at zero.
 let x: byte;
 let y: byte = 65;
 let z = 'A';
+let wide: int = 300;
 ```
 
-`let name = expr;` infers `byte`. Inner scopes may shadow outer names:
+`let name = expr;` infers `byte` for values through 255 and `int` for wider
+32-bit literals. Inner scopes may shadow outer names:
 
 ```sane
 let x = 'A';
@@ -125,6 +128,8 @@ Numeric literals may be decimal, binary, or hexadecimal:
 65
 0b01000001
 0x41
+300
+0xffffffff
 ```
 
 Character and string literals are ASCII-only:
@@ -144,9 +149,21 @@ true  // 1
 false // 0
 ```
 
+`int` is a signed 32-bit two's-complement value stored in four little-endian
+cells. Current int arithmetic wraps modulo 2^32. Addition, subtraction,
+negation, equality, inequality, and use as a condition are implemented.
+
+Bytes widen to ints implicitly. Narrowing requires an explicit cast:
+
+```sane
+let small: byte = 65;
+let wide: int = small;
+let low: byte = wide as byte;
+```
+
 ## Assignment
 
-Plain assignment replaces the destination byte:
+Plain assignment replaces the destination value:
 
 ```sane
 x = expression;
@@ -354,10 +371,12 @@ x % 0 == x
 
 ## Current Limits
 
-- The only value type is `byte`.
+- `int` multiplication, division, remainder, ordering comparisons, bitwise
+  operations, shifts, decimal I/O, function values, and arrays are not yet
+  implemented.
 - Arrays contain bytes and have a compile-time length.
 - Dynamic array indexes are not bounds checked.
-- Function parameters and locals are bytes; functions return either a byte or
-  no value.
+- Function parameters and return values remain bytes; top-level and block-local
+  scalar variables may be bytes or ints.
 - Recursive function call graphs are rejected.
 - Source files are compiled independently; there are no modules.

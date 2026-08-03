@@ -140,6 +140,22 @@ fn pc_backend_runs_linear_programs() {
 }
 
 #[test]
+fn pc_backend_runs_int_scalar_storage_and_casts() {
+    let bf = compile_pc(
+        "let value: int = 0x12345641; let copy: int = value; value = 0xabcdef42; put copy as byte; put value as byte;",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"AB");
+}
+
+#[test]
+fn pc_backend_runs_int_add_sub_and_equality() {
+    let bf = compile_pc(
+        "let value: int = 65535; value = value + 1; if value == 65536 { put 'A'; } value = value - 2; if value == 65534 { put 'B'; }",
+    );
+    assert_eq!(run_bf(&bf, &[]), b"AB");
+}
+
+#[test]
 fn profiled_pc_backend_counts_dispatches_without_changing_output() {
     let program = resolve("put 'A';");
     let bf = bf::compile_pc_with_profiling(&program).unwrap();

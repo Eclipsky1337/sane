@@ -23,7 +23,8 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] representation and language design
   - [x] scalar type and storage layout
   - [x] `int` syntax and 32-bit literal lexing
-  - [ ] literals, declarations, assignment, and casts
+  - [x] literals, declarations, assignment, and casts
+  - [x] addition, subtraction, equality, and conditions
   - [ ] core arithmetic and comparisons
   - [ ] functions, I/O, and arrays
 

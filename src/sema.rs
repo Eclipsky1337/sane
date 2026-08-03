@@ -96,7 +96,7 @@ pub struct ResolvedFunction {
 pub enum ResolvedStmt {
     Const,
     Let {
-        cell: usize,
+        layout: ValueLayout,
         init: Option<ResolvedExpr>,
     },
     LetArray {
@@ -105,7 +105,7 @@ pub enum ResolvedStmt {
         init: Vec<u8>,
     },
     Assign {
-        cell: usize,
+        layout: ValueLayout,
         expr: ResolvedExpr,
     },
     ArraySet {
@@ -118,7 +118,7 @@ pub enum ResolvedStmt {
     Puts(Vec<u8>),
     Print(ResolvedExpr),
     Println(ResolvedExpr),
-    Read(usize),
+    Read(ValueLayout),
     ReadArray {
         base: usize,
         len: usize,
@@ -155,7 +155,8 @@ pub enum ResolvedStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedExpr {
     Byte(u8),
-    Var(usize),
+    Int(u32),
+    Var(ValueLayout),
     ArrayGet {
         base: usize,
         len: usize,
@@ -174,6 +175,43 @@ pub enum ResolvedExpr {
         op: BinOp,
         right: Box<ResolvedExpr>,
     },
+    Cast {
+        expr: Box<ResolvedExpr>,
+        target: ValueType,
+    },
+}
+
+impl ResolvedExpr {
+    pub fn value_type(&self) -> ValueType {
+        match self {
+            Self::Byte(_) | Self::ArrayGet { .. } | Self::Call { .. } => ValueType::Byte,
+            Self::Int(_) => ValueType::Int,
+            Self::Var(layout) => layout.value_type,
+            Self::Unary { op, expr } => match op {
+                UnOp::Neg => ValueType::Int,
+                _ => expr.value_type(),
+            },
+            Self::Binary {
+                left, op, right, ..
+            } => match op {
+                BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::Or
+                | BinOp::And => ValueType::Byte,
+                _ if left.value_type() == ValueType::Int
+                    || right.value_type() == ValueType::Int =>
+                {
+                    ValueType::Int
+                }
+                _ => ValueType::Byte,
+            },
+            Self::Cast { target, .. } => *target,
+        }
+    }
 }
 
 pub fn analyze(program: &Program) -> Result<Symbols, Diagnostic> {
@@ -442,17 +480,26 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                if *value_type == Some(ValueType::Int) {
-                    return Err(Diagnostic::new(
-                        "int variables are parsed but not lowered yet",
-                        *name_span,
-                    ));
-                }
                 let init = init
                     .as_ref()
                     .map(|expr| self.resolve_expr(expr))
                     .transpose()?;
-                let layout = self.alloc_scope_value(ValueType::Byte);
+                let resolved_type = value_type
+                    .or_else(|| init.as_ref().map(ResolvedExpr::value_type))
+                    .expect("parser requires an initializer for inferred declarations");
+                if let Some(init) = &init
+                    && !can_assign(resolved_type, init.value_type())
+                {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "cannot assign {:?} expression to {:?} variable",
+                            init.value_type(),
+                            resolved_type
+                        ),
+                        *name_span,
+                    ));
+                }
+                let layout = self.alloc_scope_value(resolved_type);
                 let cell = layout.base;
                 self.current_scope_mut()
                     .names
@@ -466,7 +513,7 @@ impl Resolver {
                         cell,
                     },
                 );
-                Ok(ResolvedStmt::Let { cell, init })
+                Ok(ResolvedStmt::Let { layout, init })
             }
             Stmt::LetArray {
                 name,
@@ -507,12 +554,20 @@ impl Resolver {
                 expr,
                 ..
             } => {
-                let cell =
+                let layout =
                     self.lookup_scalar(name, *name_span, "assignment to undeclared variable")?;
-                Ok(ResolvedStmt::Assign {
-                    cell,
-                    expr: self.resolve_expr(expr)?,
-                })
+                let expr = self.resolve_expr(expr)?;
+                if !can_assign(layout.value_type, expr.value_type()) {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "cannot assign {:?} expression to {:?} variable",
+                            expr.value_type(),
+                            layout.value_type
+                        ),
+                        *name_span,
+                    ));
+                }
+                Ok(ResolvedStmt::Assign { layout, expr })
             }
             Stmt::ArrayAssign {
                 name,
@@ -530,9 +585,17 @@ impl Resolver {
                     expr: self.resolve_expr(expr)?,
                 })
             }
-            Stmt::Put(expr, _) => Ok(ResolvedStmt::Put(self.resolve_expr(expr)?)),
+            Stmt::Put(expr, span) => {
+                let expr = self.resolve_expr(expr)?;
+                self.require_byte(&expr, *span, "raw output")?;
+                Ok(ResolvedStmt::Put(expr))
+            }
             Stmt::Puts(bytes, _) => Ok(ResolvedStmt::Puts(bytes.clone())),
-            Stmt::Print(expr, _) => Ok(ResolvedStmt::Print(self.resolve_expr(expr)?)),
+            Stmt::Print(expr, span) => {
+                let expr = self.resolve_expr(expr)?;
+                self.require_byte(&expr, *span, "decimal output")?;
+                Ok(ResolvedStmt::Print(expr))
+            }
             Stmt::PrintFormat {
                 parts, specs, args, ..
             } => {
@@ -543,6 +606,7 @@ impl Resolver {
                     }
                     if let Some(arg) = args.get(index) {
                         let expr = self.resolve_expr(arg)?;
+                        self.require_byte(&expr, arg.span(), "formatted output")?;
                         match specs[index] {
                             FormatSpec::Decimal => stmts.push(ResolvedStmt::Print(expr)),
                             FormatSpec::Byte => stmts.push(ResolvedStmt::Put(expr)),
@@ -551,12 +615,18 @@ impl Resolver {
                 }
                 Ok(ResolvedStmt::Block(stmts))
             }
-            Stmt::Println(expr, _) => Ok(ResolvedStmt::Println(self.resolve_expr(expr)?)),
-            Stmt::Read(name, span) => Ok(ResolvedStmt::Read(self.lookup_scalar(
-                name,
-                *span,
-                "read into undeclared variable",
-            )?)),
+            Stmt::Println(expr, span) => {
+                let expr = self.resolve_expr(expr)?;
+                self.require_byte(&expr, *span, "decimal output")?;
+                Ok(ResolvedStmt::Println(expr))
+            }
+            Stmt::Read(name, span) => {
+                let layout = self.lookup_scalar(name, *span, "read into undeclared variable")?;
+                if layout.value_type != ValueType::Byte {
+                    return Err(Diagnostic::new("int input is not implemented yet", *span));
+                }
+                Ok(ResolvedStmt::Read(layout))
+            }
             Stmt::ReadArray {
                 name,
                 name_span,
@@ -682,14 +752,11 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) -> Result<ResolvedExpr, Diagnostic> {
         match expr {
             Expr::Byte(value, _) => Ok(ResolvedExpr::Byte(*value)),
-            Expr::Int(_, span) => Err(Diagnostic::new(
-                "int expressions are parsed but not lowered yet",
-                *span,
-            )),
+            Expr::Int(value, _) => Ok(ResolvedExpr::Int(*value)),
             Expr::Var(name, span) => {
                 match self.lookup_symbol(name, *span, "use of undeclared variable")? {
                     Symbol::Const { value, .. } => Ok(ResolvedExpr::Byte(value)),
-                    Symbol::Scalar(layout) => Ok(ResolvedExpr::Var(layout.base)),
+                    Symbol::Scalar(layout) => Ok(ResolvedExpr::Var(layout)),
                     Symbol::Array { .. } => {
                         Err(Diagnostic::new(format!("`{name}` is an array"), *span))
                     }
@@ -724,29 +791,53 @@ impl Resolver {
                 }
                 Ok(ResolvedExpr::Call { function, args })
             }
-            Expr::Unary {
-                op: UnOp::Neg,
-                span,
-                ..
-            } => Err(Diagnostic::new(
-                "negative int expressions are parsed but not lowered yet",
-                *span,
-            )),
-            Expr::Unary { op, expr, .. } => Ok(ResolvedExpr::Unary {
-                op: *op,
-                expr: Box::new(self.resolve_expr(expr)?),
-            }),
+            Expr::Unary { op, expr, span } => {
+                let expr = self.resolve_expr(expr)?;
+                if *op == UnOp::Neg {
+                    match expr {
+                        ResolvedExpr::Byte(value) => {
+                            return Ok(ResolvedExpr::Int(0u32.wrapping_sub(value.into())));
+                        }
+                        ResolvedExpr::Int(value) => {
+                            return Ok(ResolvedExpr::Int(0u32.wrapping_sub(value)));
+                        }
+                        expr => {
+                            return Ok(ResolvedExpr::Unary {
+                                op: *op,
+                                expr: Box::new(expr),
+                            });
+                        }
+                    }
+                }
+                self.require_byte(&expr, *span, "unary operator")?;
+                Ok(ResolvedExpr::Unary {
+                    op: *op,
+                    expr: Box::new(expr),
+                })
+            }
             Expr::Binary {
                 left, op, right, ..
-            } => Ok(ResolvedExpr::Binary {
-                left: Box::new(self.resolve_expr(left)?),
-                op: *op,
-                right: Box::new(self.resolve_expr(right)?),
+            } => {
+                let left = self.resolve_expr(left)?;
+                let right = self.resolve_expr(right)?;
+                let has_int =
+                    left.value_type() == ValueType::Int || right.value_type() == ValueType::Int;
+                if has_int && !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Eq | BinOp::Ne) {
+                    return Err(Diagnostic::new(
+                        "this int binary operation is not implemented yet",
+                        expr.span(),
+                    ));
+                }
+                Ok(ResolvedExpr::Binary {
+                    left: Box::new(left),
+                    op: *op,
+                    right: Box::new(right),
+                })
+            }
+            Expr::Cast { expr, target, .. } => Ok(ResolvedExpr::Cast {
+                expr: Box::new(self.resolve_expr(expr)?),
+                target: *target,
             }),
-            Expr::Cast { span, .. } => Err(Diagnostic::new(
-                "integer casts are parsed but not lowered yet",
-                *span,
-            )),
         }
     }
 
@@ -941,11 +1032,32 @@ impl Resolver {
         Err(Diagnostic::new(format!("{prefix} `{name}`"), span))
     }
 
-    fn lookup_scalar(&self, name: &str, span: Span, prefix: &str) -> Result<usize, Diagnostic> {
+    fn lookup_scalar(
+        &self,
+        name: &str,
+        span: Span,
+        prefix: &str,
+    ) -> Result<ValueLayout, Diagnostic> {
         match self.lookup_symbol(name, span, prefix)? {
-            Symbol::Scalar(layout) => Ok(layout.base),
+            Symbol::Scalar(layout) => Ok(layout),
             Symbol::Const { .. } => Err(Diagnostic::new(format!("`{name}` is a constant"), span)),
             Symbol::Array { .. } => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
+        }
+    }
+
+    fn require_byte(
+        &self,
+        expr: &ResolvedExpr,
+        span: Span,
+        context: &str,
+    ) -> Result<(), Diagnostic> {
+        if expr.value_type() == ValueType::Byte {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                format!("{context} for int is not implemented yet"),
+                span,
+            ))
         }
     }
 
@@ -1048,6 +1160,10 @@ fn eval_const_unary(op: UnOp, value: u8) -> u8 {
     }
 }
 
+fn can_assign(target: ValueType, source: ValueType) -> bool {
+    target == source || (target == ValueType::Int && source == ValueType::Byte)
+}
+
 fn eval_const_binary(left: u8, op: BinOp, right: u8) -> u8 {
     match op {
         BinOp::Or => u8::from(left != 0 || right != 0),
@@ -1140,13 +1256,14 @@ fn count_stmt_call(stmt: &ResolvedStmt) -> usize {
 
 fn count_expr_calls(expr: &ResolvedExpr) -> usize {
     match expr {
-        ResolvedExpr::Byte(_) | ResolvedExpr::Var(_) => 0,
+        ResolvedExpr::Byte(_) | ResolvedExpr::Int(_) | ResolvedExpr::Var(_) => 0,
         ResolvedExpr::ArrayGet { index, .. } => count_expr_calls(index),
         ResolvedExpr::Call { args, .. } => 1 + args.iter().map(count_expr_calls).sum::<usize>(),
         ResolvedExpr::Unary { expr, .. } => count_expr_calls(expr),
         ResolvedExpr::Binary { left, right, .. } => {
             count_expr_calls(left) + count_expr_calls(right)
         }
+        ResolvedExpr::Cast { expr, .. } => count_expr_calls(expr),
     }
 }
 

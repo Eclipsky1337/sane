@@ -63,9 +63,75 @@ fn int_declarations_literals_negation_and_casts_parse() {
 
 #[test]
 fn int_frontend_reports_staged_lowering_and_literal_limits() {
-    let error = compile_source_with_path("let value: int = 300;", "int.sn").unwrap_err();
-    assert!(error.contains("int variables are parsed but not lowered yet"));
     assert!(lexer::lex("let value = 4294967296;").is_err());
+}
+
+#[test]
+fn int_scalars_initialize_assign_copy_and_cast() {
+    let src = "
+        let first: int = 0x12345641;
+        let copy: int = first;
+        let widened: int = 'Z';
+        let inferred = 0xabcdef42;
+        first = inferred;
+        let low: byte = copy as byte;
+        put low;
+        put widened as byte;
+        put first as byte;
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"AZB");
+}
+
+#[test]
+fn int_to_byte_requires_an_explicit_cast() {
+    let error = compile_source_with_path("let wide: int = 300; let narrow: byte = wide;", "int.sn")
+        .unwrap_err();
+    assert!(error.contains("cannot assign Int expression to Byte variable"));
+}
+
+#[test]
+fn int_add_sub_equality_and_conditions_use_all_four_cells() {
+    let src = "
+        let value: int = 255;
+        value = value + 1;
+        if value == 256 { put 'A'; }
+
+        value = value + 0x0000ff00;
+        if value == 65536 { put 'B'; }
+
+        value = value - 1;
+        if value == 65535 { put 'C'; }
+
+        let wrapped: int = 0xffffffff + 1;
+        if wrapped == 0 { put 'D'; }
+
+        let borrowed: int = 0;
+        borrowed = borrowed - 1;
+        if borrowed == 0xffffffff { put 'E'; }
+        if borrowed != 0 { put 'F'; }
+        if borrowed { put 'G'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCDEFG");
+}
+
+#[test]
+fn int_mixed_arithmetic_promotes_bytes_and_supports_negation() {
+    let src = "
+        let wide = 300;
+        let mixed: int = 1 + wide;
+        if mixed == 301 { put 'A'; }
+        let small: byte = 2;
+        mixed = small + wide;
+        if mixed == 302 { put 'B'; }
+        let negative: int = -small;
+        if negative == 0xfffffffe { put 'C'; }
+        negative = -wide;
+        if negative == 0xfffffed4 { put 'D'; }
+    ";
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"ABCD");
 }
 
 #[test]

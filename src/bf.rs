@@ -1,7 +1,8 @@
-use crate::ast::{BinOp, UnOp};
+use crate::ast::{BinOp, UnOp, ValueType};
 use crate::ir::{BlockId, Op, Terminator};
 use crate::sema::{
-    MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, WORK_CELL_COUNT,
+    MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt, ValueLayout,
+    WORK_CELL_COUNT,
 };
 
 const T0: usize = 0;
@@ -108,9 +109,9 @@ struct PcRuntime {
 
 fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
     match op {
-        Op::Let { cell, init } => emit_basic_stmt(
+        Op::Let { layout, init } => emit_basic_stmt(
             &Stmt::Let {
-                cell: *cell,
+                layout: *layout,
                 init: init.clone(),
             },
             out,
@@ -123,9 +124,9 @@ fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
             },
             out,
         ),
-        Op::Assign { cell, expr } => emit_basic_stmt(
+        Op::Assign { layout, expr } => emit_basic_stmt(
             &Stmt::Assign {
-                cell: *cell,
+                layout: *layout,
                 expr: expr.clone(),
             },
             out,
@@ -342,11 +343,13 @@ fn emit_controlled_stmt(stmt: &Stmt, out: &mut BfOut, ctx: LoopContext) -> Resul
 fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Result<(), String> {
     match stmt {
         Stmt::Const => {}
-        Stmt::Let { cell, init } => {
+        Stmt::Let { layout, init } => {
             if let Some(expr) = init {
-                emit_expr_to(expr, *cell, out, &[*cell])?;
+                emit_value_to(expr, *layout, out)?;
             } else {
-                out.clear(*cell);
+                for cell in layout.cells() {
+                    out.clear(cell);
+                }
             }
         }
         Stmt::LetArray { base, len, init } => {
@@ -357,8 +360,8 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
                 out.set_const(*base + 4 + offset, value);
             }
         }
-        Stmt::Assign { cell, expr } => {
-            emit_expr_to(expr, *cell, out, &[*cell])?;
+        Stmt::Assign { layout, expr } => {
+            emit_value_to(expr, *layout, out)?;
         }
         Stmt::ArraySet {
             base,
@@ -380,7 +383,7 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
             out.print_byte_decimal(T0);
             out.put_byte_const(b'\n');
         }
-        Stmt::Read(cell) => out.read(*cell),
+        Stmt::Read(layout) => out.read(layout.base),
         Stmt::ReadArray { base, len, index } => emit_array_read(*base, *len, index, out)?,
         Stmt::Call { .. } | Stmt::Return(_) => {
             return Err(
@@ -601,6 +604,33 @@ fn emit_expr_to(
     out: &mut BfOut,
     reserved: &[usize],
 ) -> Result<(), String> {
+    if expr.value_type() == ValueType::Int {
+        let base = out.alloc_control_cell();
+        for _ in 1..4 {
+            out.alloc_control_cell();
+        }
+        let layout = ValueLayout {
+            base,
+            value_type: ValueType::Int,
+        };
+        emit_int_to(expr, layout, out)?;
+        out.clear(dst);
+        for cell in layout.cells() {
+            out.copy_add(cell, dst, T0);
+        }
+        out.boolify(dst, T0);
+        out.free_control_cells(4);
+        return Ok(());
+    }
+
+    if let Expr::Binary { left, op, right } = expr
+        && matches!(op, BinOp::Eq | BinOp::Ne)
+        && (left.value_type() == ValueType::Int || right.value_type() == ValueType::Int)
+    {
+        emit_int_equality(left, right, *op, dst, out)?;
+        return Ok(());
+    }
+
     if let Some(value) = const_eval(expr) {
         out.clear(dst);
         out.set_const(dst, value);
@@ -612,8 +642,8 @@ fn emit_expr_to(
             out.clear(dst);
             out.set_const(dst, *value);
         }
-        Expr::Var(name) => {
-            let src = *name;
+        Expr::Var(layout) => {
+            let src = layout.base;
             if src != dst {
                 let tmp = alloc_temp(reserved)?;
                 out.clear(dst);
@@ -627,6 +657,26 @@ fn emit_expr_to(
             return Err(
                 "internal error: function call reached direct expression codegen".to_string(),
             );
+        }
+        Expr::Int(_) => unreachable!("int values are handled before byte codegen"),
+        Expr::Cast { expr, target } => {
+            if *target != ValueType::Byte {
+                return Err("internal error: int cast reached byte codegen".to_string());
+            }
+            match expr.as_ref() {
+                Expr::Int(value) => {
+                    out.clear(dst);
+                    out.set_const(dst, *value as u8);
+                }
+                Expr::Var(layout) if layout.value_type == ValueType::Int => {
+                    if layout.base != dst {
+                        let tmp = alloc_temp(reserved)?;
+                        out.clear(dst);
+                        out.copy_add(layout.base, dst, tmp);
+                    }
+                }
+                _ => emit_expr_to(expr, dst, out, reserved)?,
+            }
         }
         Expr::Unary { op, expr } => {
             emit_expr_to(expr, dst, out, reserved)?;
@@ -856,6 +906,7 @@ fn emit_const_binary_to(
 fn const_eval(expr: &Expr) -> Option<u8> {
     match expr {
         Expr::Byte(value) => Some(*value),
+        Expr::Int(_) => None,
         Expr::Var(_) => None,
         Expr::ArrayGet { .. } => None,
         Expr::Call { .. } => None,
@@ -915,7 +966,173 @@ fn const_eval(expr: &Expr) -> Option<u8> {
                 BinOp::Ge => u8::from(left >= right),
             })
         }
+        Expr::Cast { expr, target } => match target {
+            ValueType::Byte => match expr.as_ref() {
+                Expr::Int(value) => Some(*value as u8),
+                _ => const_eval(expr),
+            },
+            ValueType::Int => None,
+        },
     }
+}
+
+fn emit_value_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), String> {
+    match dst.value_type {
+        ValueType::Byte => emit_expr_to(expr, dst.base, out, &[dst.base]),
+        ValueType::Int => emit_int_to(expr, dst, out),
+    }
+}
+
+fn emit_int_to(expr: &Expr, dst: ValueLayout, out: &mut BfOut) -> Result<(), String> {
+    debug_assert_eq!(dst.value_type, ValueType::Int);
+    if expr.value_type() == ValueType::Byte {
+        emit_expr_to(expr, dst.base, out, &[dst.base])?;
+        for cell in dst.base + 1..dst.base + 4 {
+            out.clear(cell);
+        }
+        return Ok(());
+    }
+
+    match expr {
+        Expr::Int(value) => {
+            for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                out.clear(dst.base + offset);
+                out.set_const(dst.base + offset, byte);
+            }
+        }
+        Expr::Var(src) if src.value_type == ValueType::Int => {
+            if *src != dst {
+                for offset in 0..4 {
+                    out.clear(dst.base + offset);
+                    out.copy_add(src.base + offset, dst.base + offset, T0);
+                }
+            }
+        }
+        Expr::Cast { expr, target } if *target == ValueType::Int => {
+            emit_int_to(expr, dst, out)?;
+        }
+        Expr::Binary { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
+            emit_int_add_sub(left, right, *op, dst, out)?;
+        }
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+        } => {
+            emit_int_add_sub(&Expr::Int(0), expr, BinOp::Sub, dst, out)?;
+        }
+        _ => return Err("int expression is not implemented in codegen yet".to_string()),
+    }
+    Ok(())
+}
+
+fn emit_int_add_sub(
+    left: &Expr,
+    right: &Expr,
+    op: BinOp,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let rhs_base = out.alloc_control_cell();
+    for _ in 1..4 {
+        out.alloc_control_cell();
+    }
+    let carry = out.alloc_control_cell();
+    let next_carry = out.alloc_control_cell();
+    let rhs = ValueLayout {
+        base: rhs_base,
+        value_type: ValueType::Int,
+    };
+    emit_int_to(right, rhs, out)?;
+    emit_int_to(left, dst, out)?;
+    out.clear(carry);
+
+    for offset in 0..4 {
+        out.clear(next_carry);
+        out.goto(carry);
+        out.code.push('[');
+        out.clear(carry);
+        match op {
+            BinOp::Add => {
+                out.add_const(dst.base + offset, 1);
+                mark_zero(dst.base + offset, next_carry, out);
+            }
+            BinOp::Sub => {
+                mark_zero(dst.base + offset, next_carry, out);
+                out.sub_const(dst.base + offset, 1);
+            }
+            _ => unreachable!(),
+        }
+        out.goto(carry);
+        out.code.push(']');
+
+        out.goto(rhs.base + offset);
+        out.code.push('[');
+        out.sub_const(rhs.base + offset, 1);
+        match op {
+            BinOp::Add => {
+                out.add_const(dst.base + offset, 1);
+                mark_zero(dst.base + offset, next_carry, out);
+            }
+            BinOp::Sub => {
+                mark_zero(dst.base + offset, next_carry, out);
+                out.sub_const(dst.base + offset, 1);
+            }
+            _ => unreachable!(),
+        }
+        out.goto(rhs.base + offset);
+        out.code.push(']');
+
+        out.boolify(next_carry, T0);
+        out.move_add(next_carry, carry);
+    }
+
+    out.free_control_cells(6);
+    Ok(())
+}
+
+fn mark_zero(cell: usize, flag: usize, out: &mut BfOut) {
+    out.clear(out.w(6));
+    out.copy_add(cell, out.w(6), T0);
+    out.logical_not(out.w(6), T0);
+    out.move_add(out.w(6), flag);
+}
+
+fn emit_int_equality(
+    left: &Expr,
+    right: &Expr,
+    op: BinOp,
+    dst: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let left_base = out.alloc_control_cell();
+    for _ in 1..8 {
+        out.alloc_control_cell();
+    }
+    let left_layout = ValueLayout {
+        base: left_base,
+        value_type: ValueType::Int,
+    };
+    let right_layout = ValueLayout {
+        base: left_base + 4,
+        value_type: ValueType::Int,
+    };
+    emit_int_to(left, left_layout, out)?;
+    emit_int_to(right, right_layout, out)?;
+    out.clear(dst);
+    out.add_const(dst, 1);
+    for offset in 0..4 {
+        out.clear(out.w(6));
+        out.clear(out.w(7));
+        out.copy_add(left_layout.base + offset, out.w(6), T0);
+        out.copy_add(right_layout.base + offset, out.w(7), T0);
+        out.eq(out.w(6), out.w(7));
+        out.bool_and(dst, out.w(6), T0);
+    }
+    if op == BinOp::Ne {
+        out.logical_not(dst, T0);
+    }
+    out.free_control_cells(8);
+    Ok(())
 }
 
 fn alloc_temp(reserved: &[usize]) -> Result<usize, String> {
