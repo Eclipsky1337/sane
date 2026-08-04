@@ -56,7 +56,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [ ] specialize constant arithmetic and comparisons
   - [ ] compact dynamic wide-array access
   - [ ] evaluate shared runtime microcode
-  - [ ] optimize tape layout from measured access frequency
+  - [x] optimize PC runtime tape layout
   - [ ] reconsider dispatcher and call-level transformations
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
@@ -74,7 +74,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 164 tests
+- The full test suite currently contains 166 tests
 
 Before starting work:
 
@@ -657,6 +657,28 @@ variables, spills, and temporaries closer together.
 Do this only after earlier transformations stabilize the generated operation
 mix. Compare total pointer-movement instructions as well as overall BF size and
 executed operations.
+
+Implemented for the PC runtime region. The dispatcher-hot cells are placed
+nearest the shared work cells in this order: `matched`, `expected`,
+`dispatch_pc`, and `pc`. Programs with reachable calls place `call_depth`
+before the return-value cells and move the less frequently referenced `running`
+cell after them.
+
+Programs without reachable calls now reserve only the five dispatcher cells.
+They no longer allocate or clear an unused return-value cell, call-depth cell,
+or the 16-cell return-PC stack. Temporary control cells therefore also begin
+closer to program storage.
+
+Compared with the selected CFG-cleanup measurements:
+
+| Program | Before BF | After BF | Change | Parsed ops | Executed ops |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `toy_aes_round` | 493,738 | 422,237 | -14.48% | 34,773 | 7,482,448 |
+| `Collatz` | 51,408 | 49,939 | -2.86% | 3,199 | 107,125 |
+
+The optimization does not change dispatch counts. Layout tests cover both byte
+and four-cell return values and verify that the live runtime regions remain
+disjoint.
 
 ### 14. Reconsider Global Control-Flow Transformations
 

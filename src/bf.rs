@@ -38,31 +38,27 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
             ReturnType::Int | ReturnType::Fixed
         )
     });
-    let reserved_cells = if wide_return { 10 } else { 7 } + MAX_CALL_DEPTH;
+    let has_calls = ir
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, Terminator::Call { .. }));
+    let return_width = if wide_return { 4 } else { 1 };
+    let reserved_cells = PcRuntime::reserved_cells(return_width, has_calls);
     let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), reserved_cells);
-    let call_depth = out.control_base() + if wide_return { 9 } else { 6 };
-    let ret_base = call_depth + 1;
-    let rt = PcRuntime {
-        pc: out.control_base(),
-        running: out.control_base() + 1,
-        dispatch_pc: out.control_base() + 2,
-        matched: out.control_base() + 3,
-        expected: out.control_base() + 4,
-        rv: out.control_base() + 5,
-        call_depth,
-        ret_base,
-    };
+    let rt = PcRuntime::new(out.control_base(), return_width, has_calls);
 
     out.clear(rt.pc);
     out.set_const(rt.pc, block_value(ir.entry)?);
     out.clear(rt.running);
     out.add_const(rt.running, 1);
-    out.clear(rt.call_depth);
-    for cell in rt.rv..rt.rv + if wide_return { 4 } else { 1 } {
-        out.clear(cell);
-    }
-    for depth in 0..MAX_CALL_DEPTH {
-        out.clear(rt.ret_base + depth);
+    if has_calls {
+        out.clear(rt.call_depth);
+        for cell in rt.rv..rt.rv + return_width {
+            out.clear(cell);
+        }
+        for depth in 0..MAX_CALL_DEPTH {
+            out.clear(rt.ret_base + depth);
+        }
     }
 
     out.goto(rt.running);
@@ -115,6 +111,93 @@ struct PcRuntime {
     rv: usize,
     call_depth: usize,
     ret_base: usize,
+}
+
+impl PcRuntime {
+    fn reserved_cells(return_width: usize, has_calls: bool) -> usize {
+        if has_calls {
+            6 + return_width + MAX_CALL_DEPTH
+        } else {
+            5
+        }
+    }
+
+    fn new(control_base: usize, return_width: usize, has_calls: bool) -> Self {
+        let matched = control_base;
+        let expected = control_base + 1;
+        let dispatch_pc = control_base + 2;
+        let pc = control_base + 3;
+
+        if has_calls {
+            let call_depth = control_base + 4;
+            let rv = control_base + 5;
+            let running = rv + return_width;
+            let ret_base = running + 1;
+            Self {
+                pc,
+                running,
+                dispatch_pc,
+                matched,
+                expected,
+                rv,
+                call_depth,
+                ret_base,
+            }
+        } else {
+            Self {
+                pc,
+                running: control_base + 4,
+                dispatch_pc,
+                matched,
+                expected,
+                rv: control_base,
+                call_depth: control_base,
+                ret_base: control_base,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pc_runtime_layout_tests {
+    use super::*;
+
+    #[test]
+    fn layout_omits_call_cells_when_no_calls_are_reachable() {
+        let rt = PcRuntime::new(100, 1, false);
+
+        assert_eq!(PcRuntime::reserved_cells(1, false), 5);
+        assert_eq!(
+            [rt.matched, rt.expected, rt.dispatch_pc, rt.pc, rt.running],
+            [100, 101, 102, 103, 104]
+        );
+    }
+
+    #[test]
+    fn layout_keeps_call_cells_disjoint_for_byte_and_wide_returns() {
+        let byte = PcRuntime::new(100, 1, true);
+        assert_eq!(PcRuntime::reserved_cells(1, true), 23);
+        assert_eq!(
+            [
+                byte.matched,
+                byte.expected,
+                byte.dispatch_pc,
+                byte.pc,
+                byte.call_depth,
+                byte.rv,
+                byte.running,
+                byte.ret_base,
+            ],
+            [100, 101, 102, 103, 104, 105, 106, 107]
+        );
+
+        let wide = PcRuntime::new(100, 4, true);
+        assert_eq!(PcRuntime::reserved_cells(4, true), 26);
+        assert_eq!(wide.call_depth, 104);
+        assert_eq!(wide.rv, 105);
+        assert_eq!(wide.running, 109);
+        assert_eq!(wide.ret_base, 110);
+    }
 }
 
 fn emit_op(op: &Op, out: &mut BfOut, rt: PcRuntime) -> Result<(), String> {
