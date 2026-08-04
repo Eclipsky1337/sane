@@ -8,6 +8,7 @@ pub struct Program {
     pub blocks: Vec<Block>,
     pub entry: BlockId,
     pub function_entries: Vec<BlockId>,
+    pub function_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +277,290 @@ pub fn lower(program: &ResolvedProgram) -> Program {
         blocks: builder.blocks,
         entry,
         function_entries,
+        function_indices: (0..program.functions.len()).collect(),
+    }
+    .remove_unreachable_blocks()
+    .remove_trivial_jump_blocks()
+    .fold_identical_branch_targets()
+    .remove_trivial_jump_blocks()
+    .merge_identical_blocks()
+    .fold_identical_branch_targets()
+    .remove_trivial_jump_blocks()
+    .remove_unused_functions()
+}
+
+impl Program {
+    fn remove_unreachable_blocks(self) -> Self {
+        let mut reachable = vec![false; self.blocks.len()];
+        let mut pending = Vec::with_capacity(self.function_entries.len() + 1);
+        pending.push(self.entry);
+        pending.extend(self.function_entries.iter().copied());
+
+        while let Some(block_id) = pending.pop() {
+            if reachable[block_id.0] {
+                continue;
+            }
+            reachable[block_id.0] = true;
+
+            match self.blocks[block_id.0].terminator {
+                Terminator::Jump(target) => pending.push(target),
+                Terminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(then_target);
+                    pending.push(else_target);
+                }
+                Terminator::Call {
+                    function,
+                    return_target,
+                    ..
+                } => {
+                    pending.push(self.function_entries[function]);
+                    pending.push(return_target);
+                }
+                Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
+            }
+        }
+
+        self.retain_blocks(&reachable)
+    }
+
+    fn remove_trivial_jump_blocks(mut self) -> Self {
+        let mut protected = vec![false; self.blocks.len()];
+        protected[self.entry.0] = true;
+        for entry in &self.function_entries {
+            protected[entry.0] = true;
+        }
+
+        let candidates = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                !protected[index]
+                    && block.ops.is_empty()
+                    && matches!(block.terminator, Terminator::Jump(_))
+            })
+            .collect::<Vec<_>>();
+        let final_targets = (0..self.blocks.len())
+            .map(|index| self.final_jump_target(BlockId(index), &candidates))
+            .collect::<Vec<_>>();
+
+        for block in &mut self.blocks {
+            thread_terminator_targets(&mut block.terminator, &final_targets);
+        }
+
+        let retained = candidates
+            .iter()
+            .zip(&final_targets)
+            .map(|(candidate, final_target)| !candidate || final_target.is_none())
+            .collect::<Vec<_>>();
+        self.retain_blocks(&retained)
+    }
+
+    fn fold_identical_branch_targets(mut self) -> Self {
+        for block in &mut self.blocks {
+            if let Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } = block.terminator
+                && then_target == else_target
+            {
+                block.terminator = Terminator::Jump(then_target);
+            }
+        }
+        self
+    }
+
+    fn merge_identical_blocks(mut self) -> Self {
+        let mut protected = vec![false; self.blocks.len()];
+        protected[self.entry.0] = true;
+        for entry in &self.function_entries {
+            protected[entry.0] = true;
+        }
+
+        let mut canonical = (0..self.blocks.len()).map(BlockId).collect::<Vec<_>>();
+        for block_index in 0..self.blocks.len() {
+            if protected[block_index] {
+                continue;
+            }
+            if let Some(existing) = (0..block_index).find(|existing| {
+                !protected[*existing]
+                    && canonical[*existing].0 == *existing
+                    && self.blocks[*existing] == self.blocks[block_index]
+            }) {
+                canonical[block_index] = BlockId(existing);
+            }
+        }
+
+        if canonical
+            .iter()
+            .enumerate()
+            .all(|(index, canonical)| canonical.0 == index)
+        {
+            return self;
+        }
+
+        for block in &mut self.blocks {
+            remap_terminator_blocks(&mut block.terminator, &canonical);
+        }
+        let retained = canonical
+            .iter()
+            .enumerate()
+            .map(|(index, canonical)| canonical.0 == index)
+            .collect::<Vec<_>>();
+        self.retain_blocks(&retained)
+    }
+
+    fn remove_unused_functions(mut self) -> Self {
+        let mut reachable = vec![false; self.blocks.len()];
+        let mut used_functions = vec![false; self.function_entries.len()];
+        let mut pending = vec![self.entry];
+
+        while let Some(block_id) = pending.pop() {
+            if reachable[block_id.0] {
+                continue;
+            }
+            reachable[block_id.0] = true;
+
+            match self.blocks[block_id.0].terminator {
+                Terminator::Jump(target) => pending.push(target),
+                Terminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(then_target);
+                    pending.push(else_target);
+                }
+                Terminator::Call {
+                    function,
+                    return_target,
+                    ..
+                } => {
+                    used_functions[function] = true;
+                    pending.push(self.function_entries[function]);
+                    pending.push(return_target);
+                }
+                Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
+            }
+        }
+
+        let mut function_remap = vec![0usize; self.function_entries.len()];
+        let mut next_function = 0;
+        for (function, used) in used_functions.iter().copied().enumerate() {
+            if used {
+                function_remap[function] = next_function;
+                next_function += 1;
+            }
+        }
+        for block in &mut self.blocks {
+            if let Terminator::Call { function, .. } = &mut block.terminator {
+                *function = function_remap[*function];
+            }
+        }
+
+        self.function_entries = self
+            .function_entries
+            .into_iter()
+            .zip(&used_functions)
+            .filter_map(|(entry, used)| used.then_some(entry))
+            .collect();
+        self.function_indices = self
+            .function_indices
+            .into_iter()
+            .zip(&used_functions)
+            .filter_map(|(index, used)| used.then_some(index))
+            .collect();
+        self.retain_blocks(&reachable)
+    }
+
+    fn final_jump_target(&self, start: BlockId, candidates: &[bool]) -> Option<BlockId> {
+        let mut visited = vec![false; self.blocks.len()];
+        let mut current = start;
+
+        while candidates[current.0] {
+            if visited[current.0] {
+                return None;
+            }
+            visited[current.0] = true;
+            let Terminator::Jump(target) = self.blocks[current.0].terminator else {
+                unreachable!("trivial jump candidates always end in a jump");
+            };
+            current = target;
+        }
+
+        Some(current)
+    }
+
+    fn retain_blocks(self, retained: &[bool]) -> Self {
+        let mut remap = vec![BlockId(0); self.blocks.len()];
+        let mut blocks = Vec::with_capacity(retained.iter().filter(|keep| **keep).count());
+
+        for (old_index, (block, keep)) in self.blocks.into_iter().zip(retained).enumerate() {
+            if *keep {
+                remap[old_index] = BlockId(blocks.len());
+                blocks.push(block);
+            }
+        }
+
+        for block in &mut blocks {
+            remap_terminator_blocks(&mut block.terminator, &remap);
+        }
+
+        Self {
+            blocks,
+            entry: remap[self.entry.0],
+            function_entries: self
+                .function_entries
+                .into_iter()
+                .map(|entry| remap[entry.0])
+                .collect(),
+            function_indices: self.function_indices,
+        }
+    }
+}
+
+fn remap_terminator_blocks(terminator: &mut Terminator, remap: &[BlockId]) {
+    match terminator {
+        Terminator::Jump(target) => *target = remap[target.0],
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            *then_target = remap[then_target.0];
+            *else_target = remap[else_target.0];
+        }
+        Terminator::Call { return_target, .. } => {
+            *return_target = remap[return_target.0];
+        }
+        Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
+    }
+}
+
+fn thread_terminator_targets(terminator: &mut Terminator, final_targets: &[Option<BlockId>]) {
+    let thread = |target: &mut BlockId| {
+        if let Some(final_target) = final_targets[target.0] {
+            *target = final_target;
+        }
+    };
+
+    match terminator {
+        Terminator::Jump(target) => thread(target),
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            thread(then_target);
+            thread(else_target);
+        }
+        Terminator::Call { return_target, .. } => thread(return_target),
+        Terminator::Return(_) | Terminator::ReturnValue | Terminator::Halt => {}
     }
 }
 

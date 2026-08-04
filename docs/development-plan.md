@@ -43,6 +43,21 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] constants, functions, typed spills, and arrays
   - [x] exact decimal output
   - [x] tests, examples, and documentation
+- [ ] Generated-program-size optimization backlog
+  - [x] remove unreachable IR blocks
+  - [x] thread jumps and remove trivial blocks
+  - [x] fold branches with identical targets
+  - [ ] fold constant expressions and branches
+  - [x] merge identical blocks
+  - [x] remove unused functions
+  - [ ] expand BF peephole simplification
+  - [ ] track known-zero control cells
+  - [ ] replace large compile-time unrolling with runtime loops
+  - [ ] specialize constant arithmetic and comparisons
+  - [ ] compact dynamic wide-array access
+  - [ ] evaluate shared runtime microcode
+  - [ ] optimize tape layout from measured access frequency
+  - [ ] reconsider dispatcher and call-level transformations
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES
@@ -59,7 +74,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 159 tests
+- The full test suite currently contains 164 tests
 
 Before starting work:
 
@@ -465,6 +480,205 @@ cost.
 - no regression in structured-backend output behavior
 - BF size growth, if any, is explicitly justified by execution improvement
 - the 256-block diagnostic remains correct
+
+## Generated Program Size Optimization Backlog
+
+Apply these changes one at a time and retain measurements after every step.
+The ordering starts with local, behavior-preserving cleanup and postpones
+runtime-layout and calling-convention changes until simpler gains are known.
+
+The current IR optimization is limited to superblock grouping. It does not
+mutate the IR or remove blocks. The final BF optimizer currently only collapses
+adjacent repeated clears such as `[-][-]` into `[-]`.
+
+For every item below:
+
+- record the IR and BF benchmark table before and after the change
+- verify exact AES and Collatz output
+- preserve structured-backend behavior
+- add focused tests for the transformation
+- keep the change only when its size or execution benefit is measurable
+
+### 1. Remove Unreachable IR Blocks
+
+Compute reachability from the program entry while following calls into function
+entries and their continuation blocks. Delete unvisited blocks and remap every
+`BlockId`, function entry, branch target, call continuation, and jump target.
+
+This should remove the six unreachable blocks currently produced for Collatz by
+the placeholder continuation blocks created after `break` and `return`.
+Deleting uncalled functions is separate interprocedural work and is not part of
+this first pass.
+
+Implemented. On Collatz this removes six blocks created after `break` and
+`return`, reducing the program from 26 blocks to 20 before later cleanup.
+
+### 2. Thread Jumps And Remove Trivial Blocks
+
+Resolve chains of empty unconditional-jump blocks to their final target, then
+remove redundant trampoline blocks. Fold a branch into a jump when both targets
+become identical. Preserve program and function entries even when they are
+otherwise trivial.
+
+Run this after unreachable-block deletion so dead predecessors do not prevent a
+safe unique-predecessor or trampoline decision.
+
+Implemented. It removes two trivial blocks from `toy_aes_round` and six more
+from Collatz. Jump cycles are retained rather than threaded indefinitely.
+
+### 3. Fold Branches With Identical Targets
+
+After jump threading, replace `Branch` with `Jump` when both targets are the
+same. Run trivial-block cleanup again because an empty branch block may become
+a removable jump block.
+
+Implemented. The reference programs do not contain this pattern after cleanup,
+but a focused duplicated-target test removes the branch completely.
+
+### 4. Fold Constant Expressions And Branches
+
+Add a pure-expression simplifier for literal-only unary and binary operations,
+casts, identities, and annihilators. Use the simplified condition to replace a
+compile-time-known `Branch` with `Jump`, followed by another unreachable-block
+cleanup.
+
+Do not fold operations whose compile-time behavior would differ from runtime
+wrapping, signed, division-by-zero, or fixed-point behavior.
+
+### 5. Merge Identical Blocks
+
+Redirect duplicate non-entry blocks to one canonical block when their complete
+operation lists and terminators are equal. Keep program and function entries
+distinct, then rerun identical-target branch folding and trivial-block cleanup.
+
+Implemented. The reference programs contain no identical blocks after earlier
+cleanup, but a focused repeated-branch test reduces two identical output
+operations to one.
+
+### 6. Remove Unused Functions
+
+Starting only from the program entry, follow calls and retain functions reached
+by an actual `Call`. Remove all blocks belonging only to unused functions and
+compact IR function indexes while preserving their mapping to semantic function
+frames.
+
+Implemented. The reference programs contain no unused functions. Focused tests
+cover removal of an earlier unused function while continuing to call a later
+function with the correct parameter frame and return value.
+
+### Selected CFG Cleanup Results
+
+After items 1, 2, 3, 5, and 6:
+
+| Program | Blocks | Dispatch groups | BF instructions | Dispatches | Executed ops |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `toy_aes_round` | 44 | 44 | 493,738 | 611 | 7,482,600 |
+| `Collatz` | 14 | 13 | 51,408 | 103 | 107,125 |
+
+Compared with the superblock baseline, BF size falls by 0.6% for AES and 19.5%
+for Collatz. Dispatches fall by 2.9% and 24.3%, while deterministic executed
+operations fall by 0.6% and 24.6%, respectively.
+
+### 7. Expand BF Peephole Simplification
+
+Replace the current single repeated-clear rewrite with a small token-aware pass
+that cancels adjacent inverse operations:
+
+- `><` and `<>`
+- `+-` and `-+`
+- repeated clears
+- runs of identical pointer or cell operations when cancellation is possible
+
+The pass must not move operations across loops or input/output instructions.
+Measure both raw BF instructions and parsed `sanei` operations.
+
+### 8. Track Known-Zero Control Cells
+
+Teach BF code generation whether temporary and control cells are already known
+to be zero. Avoid emitting a clear every time such a cell is allocated, and
+invalidate the fact whenever generated code may leave a non-zero value.
+
+Start with locally scoped control cells. Do not attempt whole-program tape-state
+analysis in the first implementation.
+
+### 9. Replace Large Compile-Time Unrolling With Runtime Loops
+
+Identify fixed-count algorithms whose generated source grows linearly with the
+iteration count, especially:
+
+- the 16 shift steps used by fixed-point multiplication
+- the 16 fractional digits considered by fixed-point decimal output
+
+Replace an unrolled sequence only when a runtime BF loop reduces generated size
+without an unacceptable execution-work increase. Keep constant small cases
+unrolled when they remain cheaper.
+
+### 10. Specialize Constant Arithmetic And Comparisons
+
+Add compact code paths for common constant operands and zero tests before using
+the generic multi-cell implementation. Prioritize operations visible in real
+examples, such as adding small constants, multiplying by powers of two, and
+comparing an `int` or `fixed` value with zero.
+
+Avoid a large collection of speculative special cases; each specialization
+must have a benchmark or code-size test demonstrating its value.
+
+### 11. Compact Dynamic Wide-Array Access
+
+Current dynamic `int` and `fixed` array access emits selection code proportional
+to the declared array length. Design a stride-four runtime traversal that moves
+or copies all four cells of the selected element without duplicating a case for
+every index.
+
+Cover loads, stores, raw input destinations where applicable, and formatted
+input destinations. Preserve the current unchecked-index semantics unless a
+separate language change explicitly adds bounds checking.
+
+### 12. Evaluate Shared Runtime Microcode
+
+Measure whether large repeated operations should be emitted once as internal
+runtime routines rather than expanded at every source operation. Candidates
+include:
+
+- `int` and `fixed` multiplication and division
+- signed and fixed decimal output
+- formatted decimal input
+
+This requires an internal calling or continuation mechanism and may increase
+runtime dispatch work. Prototype one operation first and retain the design only
+if programs with repeated uses become materially smaller.
+
+### 13. Optimize Tape Layout From Measured Access Frequency
+
+The BF generator pays one instruction per pointer step. Collect or estimate
+which permanent cells are accessed most often and place hot runtime cells,
+variables, spills, and temporaries closer together.
+
+Do this only after earlier transformations stabilize the generated operation
+mix. Compare total pointer-movement instructions as well as overall BF size and
+executed operations.
+
+### 14. Reconsider Global Control-Flow Transformations
+
+After the preceding work, remeasure representative programs before considering:
+
+- hierarchical or compressed PC dispatch
+- trace-based block ordering
+- selective function inlining
+- tail-call lowering
+- shared branch tails
+
+These transformations have larger semantic and size tradeoffs. Do not introduce
+SSA or a general interprocedural optimizer unless concrete programs demonstrate
+that the simpler passes are insufficient.
+
+### Backlog Completion Criteria
+
+- each retained optimization has focused correctness tests
+- benchmark history shows its individual effect
+- generated BF remains valid on ordinary Brainfuck interpreters
+- exact reference-program output remains unchanged
+- documentation distinguishes implemented passes from deferred experiments
 
 ## Phase 3: P3 Item 13 Debug Symbols
 

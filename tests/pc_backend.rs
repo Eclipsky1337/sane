@@ -70,6 +70,7 @@ fn ir_stats_classify_control_flow_and_reachability() {
         ],
         entry: ir::BlockId(0),
         function_entries: vec![ir::BlockId(4)],
+        function_indices: vec![0],
     };
 
     assert_eq!(
@@ -84,6 +85,79 @@ fn ir_stats_classify_control_flow_and_reachability() {
             branches: 1,
         }
     );
+}
+
+#[test]
+fn ir_lowering_removes_unreachable_continuation_blocks() {
+    let program = ir::lower(&resolve(
+        "fn choose(value: byte) -> byte {\
+             if value { return 1; } else { return 2; }\
+         }\
+         let value = 0;\
+         loop {\
+             if value == 0 { break; }\
+         }\
+         print choose(value);",
+    ));
+
+    let stats = program.stats();
+    assert_eq!(stats.blocks, stats.reachable_blocks);
+}
+
+#[test]
+fn ir_lowering_threads_and_removes_trivial_jump_blocks() {
+    let program = ir::lower(&resolve(
+        "let value = 0;\
+         if value { }\
+         for ;; {\
+             if value == 0 { break; }\
+         }\
+         puts \"done\";",
+    ));
+
+    assert_eq!(program.stats().trivial_jumps, 0);
+}
+
+#[test]
+fn ir_lowering_folds_branches_with_identical_targets() {
+    let program = ir::lower(&resolve(
+        "let value = 1;\
+         if value { } else { }\
+         puts \"done\";",
+    ));
+
+    assert_eq!(program.stats().branches, 0);
+}
+
+#[test]
+fn ir_lowering_merges_identical_blocks() {
+    let program = ir::lower(&resolve(
+        "let value = 1;\
+         if value { puts \"same\"; } else { puts \"same\"; }",
+    ));
+
+    assert_eq!(program.stats().ops, 2);
+    assert_eq!(program.stats().branches, 0);
+}
+
+#[test]
+fn ir_lowering_removes_unused_functions_and_preserves_function_mapping() {
+    let source = "fn unused(value: byte) -> byte {\
+                      if value { return value + 1; }\
+                      return value + 2;\
+                  }\
+                  fn used(value: byte) -> byte { return value + 3; }\
+                  print used(4);";
+    let resolved = resolve(source);
+    let program = ir::lower(&resolved);
+    let used_only = ir::lower(&resolve(
+        "fn used(value: byte) -> byte { return value + 3; } print used(4);",
+    ));
+
+    assert_eq!(program.function_entries.len(), 1);
+    assert_eq!(program.function_indices, vec![1]);
+    assert_eq!(program.stats(), used_only.stats());
+    assert_eq!(run_bf(&bf::compile_pc(&resolved).unwrap(), &[]), b"7");
 }
 
 #[test]
@@ -109,6 +183,7 @@ fn superblocks_join_only_unique_predecessor_jump_chains() {
         ],
         entry: ir::BlockId(0),
         function_entries: vec![ir::BlockId(6)],
+        function_indices: vec![0],
     };
 
     assert_eq!(

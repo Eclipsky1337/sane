@@ -32,10 +32,12 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
         return Err("pc backend supports at most 256 basic blocks".to_string());
     }
 
-    let wide_return = program
-        .functions
-        .iter()
-        .any(|function| matches!(function.return_type, ReturnType::Int | ReturnType::Fixed));
+    let wide_return = ir.function_indices.iter().any(|function| {
+        matches!(
+            program.functions[*function].return_type,
+            ReturnType::Int | ReturnType::Fixed
+        )
+    });
     let reserved_cells = if wide_return { 10 } else { 7 } + MAX_CALL_DEPTH;
     let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), reserved_cells);
     let call_depth = out.control_base() + if wide_return { 9 } else { 6 };
@@ -242,11 +244,16 @@ fn emit_terminator(
             return_target,
         } => {
             let function_index = *function;
+            let original_function_index = ir
+                .function_indices
+                .get(function_index)
+                .copied()
+                .ok_or_else(|| "internal error: invalid IR function index".to_string())?;
             set_ret_pc(out, rt, block_value(*return_target)?)?;
             out.add_const(rt.call_depth, 1);
             let function = program
                 .functions
-                .get(function_index)
+                .get(original_function_index)
                 .ok_or_else(|| "internal error: invalid function index".to_string())?;
             if function.params.len() != args.len() {
                 return Err("internal error: argument count mismatch".to_string());
