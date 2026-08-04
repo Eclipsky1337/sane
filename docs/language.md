@@ -27,8 +27,8 @@ let x = 65;
 
 The reserved keywords are `let`, `const`, `fn`, `return`, `if`, `else`,
 `while`, `loop`, `for`, `break`, `continue`, `byte`, `int`, `fixed`, `put`,
-`puts`, `print`, `println`, `read`, `as`, `true`, and `false`. They cannot be
-used as identifiers.
+`puts`, `print`, `println`, `read`, `input`, `as`, `true`, and `false`. They
+cannot be used as identifiers.
 
 `const` became a reserved keyword in Sane 1.2; older source that used it as an
 identifier must rename that identifier.
@@ -251,6 +251,41 @@ read data[i];
 
 Wider values are parsed explicitly by repeatedly reading bytes and combining
 their digits.
+
+`input` provides compile-time checked formatted input and returns the number of
+successfully assigned fields as a byte:
+
+```sane
+let left: int;
+let right: int;
+let matched: byte = input("{} {}", left, right);
+```
+
+The first argument must be a string literal. Remaining arguments must be
+writable scalar variables or array elements. Supported placeholders are:
+
+- `{}` and `{:d}` parse one or more decimal digits into a byte, or an optional
+  leading `-` followed by digits into an int.
+- `{:c}` consumes one raw byte and requires a byte destination.
+- `{{` and `}}` match literal braces.
+
+Ordinary characters, including whitespace, match exactly. Input stops at the
+first mismatch, invalid field, overflow, or EOF. A destination is updated only
+after its complete field succeeds, while earlier successful destinations stay
+updated. Consumed mismatching bytes are not returned to the input stream. A
+final decimal field must end at line feed, carriage return, or EOF; the line
+ending is consumed. Decimal fixed input is not supported in this first version.
+
+Array destination indexes are evaluated from left to right when their fields
+are reached:
+
+```sane
+let index: byte;
+let values: int[4];
+let matched = input("{} {}", index, values[index]);
+```
+
+`input` is a compiler-recognized expression rather than an ordinary function.
 
 Output statements have distinct formatting behavior:
 

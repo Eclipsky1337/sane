@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, IntLiteralKind, Program, ReturnType,
-    Stmt, UnOp, ValueType,
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, InputTarget, IntLiteralKind, Program,
+    ReturnType, Stmt, UnOp, ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 
@@ -191,6 +191,11 @@ pub enum ResolvedExpr {
         args: Vec<ResolvedExpr>,
         value_type: ValueType,
     },
+    Input {
+        parts: Vec<Vec<u8>>,
+        specs: Vec<FormatSpec>,
+        targets: Vec<ResolvedInputTarget>,
+    },
     Unary {
         op: UnOp,
         expr: Box<ResolvedExpr>,
@@ -206,6 +211,24 @@ pub enum ResolvedExpr {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedInputTarget {
+    Scalar(ValueLayout),
+    Array {
+        layout: ArrayLayout,
+        index: Box<ResolvedExpr>,
+    },
+}
+
+impl ResolvedInputTarget {
+    pub fn value_type(&self) -> ValueType {
+        match self {
+            Self::Scalar(layout) => layout.value_type,
+            Self::Array { layout, .. } => layout.value_type,
+        }
+    }
+}
+
 impl ResolvedExpr {
     pub fn value_type(&self) -> ValueType {
         match self {
@@ -215,6 +238,7 @@ impl ResolvedExpr {
             Self::Var(layout) => layout.value_type,
             Self::ArrayGet { layout, .. } => layout.value_type,
             Self::Call { value_type, .. } => *value_type,
+            Self::Input { .. } => ValueType::Byte,
             Self::Unary { op, expr } => match op {
                 UnOp::Not => ValueType::Byte,
                 UnOp::Neg if expr.value_type() == ValueType::Fixed => ValueType::Fixed,
@@ -961,6 +985,67 @@ impl Resolver {
                     value_type,
                 })
             }
+            Expr::Input {
+                parts,
+                specs,
+                targets,
+                span,
+            } => {
+                if specs.len() != targets.len() {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "input format has {} placeholders, but {} destinations were provided",
+                            specs.len(),
+                            targets.len()
+                        ),
+                        *span,
+                    ));
+                }
+                let mut resolved_targets = Vec::new();
+                for (spec, target) in specs.iter().zip(targets) {
+                    let resolved = match target {
+                        InputTarget::Scalar { name, name_span } => ResolvedInputTarget::Scalar(
+                            self.lookup_scalar(name, *name_span, "input into undeclared variable")?,
+                        ),
+                        InputTarget::Array {
+                            name,
+                            name_span,
+                            index,
+                            ..
+                        } => {
+                            let layout = self.lookup_array(name, *name_span)?;
+                            self.check_const_index(index, layout.len)?;
+                            let index = self.resolve_expr(index)?;
+                            self.require_byte(&index, *name_span, "array indexing")?;
+                            ResolvedInputTarget::Array {
+                                layout,
+                                index: Box::new(index),
+                            }
+                        }
+                    };
+                    match spec {
+                        FormatSpec::Byte if resolved.value_type() != ValueType::Byte => {
+                            return Err(Diagnostic::new(
+                                "raw formatted input requires a byte destination",
+                                target.span(),
+                            ));
+                        }
+                        FormatSpec::Decimal if resolved.value_type() == ValueType::Fixed => {
+                            return Err(Diagnostic::new(
+                                "formatted decimal input does not yet support fixed destinations",
+                                target.span(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    resolved_targets.push(resolved);
+                }
+                Ok(ResolvedExpr::Input {
+                    parts: parts.clone(),
+                    specs: specs.clone(),
+                    targets: resolved_targets,
+                })
+            }
             Expr::Unary { op, expr, span } => {
                 if *op == UnOp::Neg
                     && let Expr::Int(value, IntLiteralKind::Decimal, _) = expr.as_ref()
@@ -1322,6 +1407,10 @@ impl Resolver {
                 "constant expression cannot call a function",
                 *span,
             )),
+            Expr::Input { span, .. } => Err(Diagnostic::new(
+                "constant expression cannot perform formatted input",
+                *span,
+            )),
             Expr::Unary { op, expr, .. } => {
                 if *op == UnOp::Neg
                     && let Expr::Int(value, IntLiteralKind::Decimal, _) = expr.as_ref()
@@ -1637,7 +1726,10 @@ fn eval_resolved_const(expr: &ResolvedExpr) -> Option<u32> {
             };
             Some(value)
         }
-        ResolvedExpr::Var(_) | ResolvedExpr::ArrayGet { .. } | ResolvedExpr::Call { .. } => None,
+        ResolvedExpr::Var(_)
+        | ResolvedExpr::ArrayGet { .. }
+        | ResolvedExpr::Call { .. }
+        | ResolvedExpr::Input { .. } => None,
     }
 }
 
@@ -1857,6 +1949,13 @@ fn collect_expr_call_types(expr: &ResolvedExpr, types: &mut Vec<ValueType>) {
                 collect_expr_call_types(arg, types);
             }
             types.push(*value_type);
+        }
+        ResolvedExpr::Input { targets, .. } => {
+            for target in targets {
+                if let ResolvedInputTarget::Array { index, .. } = target {
+                    collect_expr_call_types(index, types);
+                }
+            }
         }
         ResolvedExpr::Unary { expr, .. } => collect_expr_call_types(expr, types),
         ResolvedExpr::Binary { left, right, .. } => {

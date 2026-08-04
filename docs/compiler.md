@@ -46,6 +46,12 @@ Formatted output such as `print "step {}: {:d} ({:c})\n", step, value, mark;`
 is validated at compile time and lowered to literal, decimal, and raw-byte
 output operations.
 
+Formatted input such as `input("{} {:c}", value, mark)` is also parsed and
+validated at compile time. The generated program performs exact literal
+matching, checked byte or signed-int decimal conversion, raw-byte fields, and
+returns the successful conversion count. Runtime format strings are not
+supported.
+
 ## Backends
 
 The default `auto` mode selects the structured backend for programs without

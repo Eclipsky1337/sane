@@ -1,6 +1,6 @@
 use crate::ast::{
-    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, IntLiteralKind, Param, Program,
-    ReturnType, Stmt, UnOp, ValueType,
+    ArrayInit, ArrayLen, BinOp, Expr, FormatSpec, Function, InputTarget, IntLiteralKind, Param,
+    Program, ReturnType, Stmt, UnOp, ValueType,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -747,6 +747,7 @@ impl Parser {
             TokenKind::FixedNumber(raw) => Ok(Expr::Fixed(raw, token.span)),
             TokenKind::True => Ok(Expr::Byte(1, token.span)),
             TokenKind::False => Ok(Expr::Byte(0, token.span)),
+            TokenKind::Input => self.parse_input_expr(token.span),
             TokenKind::Ident(name) => {
                 if self.match_kind(TokenKind::LParen) {
                     let mut args = Vec::new();
@@ -790,6 +791,41 @@ impl Parser {
                 token.span,
             )),
         }
+    }
+
+    fn parse_input_expr(&mut self, start: Span) -> Result<Expr, Diagnostic> {
+        self.expect(TokenKind::LParen)?;
+        let format = self.advance_token().clone();
+        let TokenKind::StringLit(bytes) = format.kind else {
+            return Err(Diagnostic::new(
+                "input format must be a string literal",
+                format.span,
+            ));
+        };
+        let (parts, specs) = parse_format_parts(&bytes, format.span)?;
+        let mut targets = Vec::new();
+        while self.match_kind(TokenKind::Comma) {
+            let (name, name_span) = self.expect_ident()?;
+            if self.match_kind(TokenKind::LBracket) {
+                let index = self.parse_expr()?;
+                let end = self.expect(TokenKind::RBracket)?.span;
+                targets.push(InputTarget::Array {
+                    name,
+                    name_span,
+                    index: Box::new(index),
+                    span: name_span.join(end),
+                });
+            } else {
+                targets.push(InputTarget::Scalar { name, name_span });
+            }
+        }
+        let end = self.expect(TokenKind::RParen)?.span;
+        Ok(Expr::Input {
+            parts,
+            specs,
+            targets,
+            span: start.join(end),
+        })
     }
 
     fn expect_ident(&mut self) -> Result<(String, Span), Diagnostic> {

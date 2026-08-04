@@ -62,7 +62,7 @@ Implementation order:
 3. zero tests, addition, subtraction, equality, and inequality
 4. signed ordering, bitwise operations, and shifts
 5. multiplication, division, and remainder
-6. signed decimal output; input remains raw byte reads with explicit parsing
+6. signed decimal output and compile-time formatted decimal input
 7. function parameters, returns, and typed spills
 8. four-cell array elements and dynamic indexing
 

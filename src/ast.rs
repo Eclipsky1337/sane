@@ -195,6 +195,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    Input {
+        parts: Vec<Vec<u8>>,
+        specs: Vec<FormatSpec>,
+        targets: Vec<InputTarget>,
+        span: Span,
+    },
     Unary {
         op: UnOp,
         expr: Box<Expr>,
@@ -220,8 +226,33 @@ impl Expr {
             | Expr::Int(_, _, span)
             | Expr::Fixed(_, span)
             | Expr::Var(_, span) => *span,
-            Expr::ArrayGet { span, .. } | Expr::Call { span, .. } => *span,
+            Expr::ArrayGet { span, .. } | Expr::Call { span, .. } | Expr::Input { span, .. } => {
+                *span
+            }
             Expr::Unary { span, .. } | Expr::Binary { span, .. } | Expr::Cast { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputTarget {
+    Scalar {
+        name: String,
+        name_span: Span,
+    },
+    Array {
+        name: String,
+        name_span: Span,
+        index: Box<Expr>,
+        span: Span,
+    },
+}
+
+impl InputTarget {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Scalar { name_span, .. } => *name_span,
+            Self::Array { span, .. } => *span,
         }
     }
 }

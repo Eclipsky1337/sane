@@ -1,5 +1,7 @@
 use crate::ast::ReturnType;
-use crate::sema::{ArrayLayout, ResolvedExpr, ResolvedProgram, ResolvedStmt, ValueLayout};
+use crate::sema::{
+    ArrayLayout, ResolvedExpr, ResolvedInputTarget, ResolvedProgram, ResolvedStmt, ValueLayout,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
@@ -594,6 +596,37 @@ impl Builder {
                     ResolvedExpr::ArrayGet {
                         layout: *layout,
                         index: Box::new(index),
+                    },
+                )
+            }
+            ResolvedExpr::Input {
+                parts,
+                specs,
+                targets,
+            } => {
+                let mut current = current;
+                let mut lowered_targets = Vec::new();
+                for target in targets {
+                    match target {
+                        ResolvedInputTarget::Scalar(layout) => {
+                            lowered_targets.push(ResolvedInputTarget::Scalar(*layout));
+                        }
+                        ResolvedInputTarget::Array { layout, index } => {
+                            let (next, index) = self.lower_expr_calls(current, index);
+                            current = next;
+                            lowered_targets.push(ResolvedInputTarget::Array {
+                                layout: *layout,
+                                index: Box::new(index),
+                            });
+                        }
+                    }
+                }
+                (
+                    current,
+                    ResolvedExpr::Input {
+                        parts: parts.clone(),
+                        specs: specs.clone(),
+                        targets: lowered_targets,
                     },
                 )
             }

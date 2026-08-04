@@ -76,8 +76,8 @@ The first version does not define `%`, bitwise operators, or shifts for
 ## Input And Output
 
 - `read` remains a raw one-byte operation and cannot target `fixed`.
-- Decimal parsing is written explicitly from byte reads until formatted
-  `input` is implemented.
+- The first formatted `input` version supports byte and int decimal fields;
+  fixed decimal parsing remains explicit source code for now.
 - `print`, `println`, `{}`, and `{:d}` render signed fixed-point decimal text.
 - Output is exact for the stored Q16.16 value, emits at least one fractional
   digit, and removes unnecessary trailing fractional zeroes.

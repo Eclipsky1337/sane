@@ -10,7 +10,7 @@ Typed functions use the basic-block IR of the experimental `pc` backend. The
 compiler automatically uses the structured backend for programs without
 functions and the PC backend for programs with functions. The language also
 supports typed compile-time constants, inferred arrays, and compile-time
-checked formatted output.
+checked formatted input and output.
 
 ## Quick Start
 
@@ -53,6 +53,7 @@ The examples are complete programs rather than syntax test cases:
 | --- | --- |
 | `examples/toy_aes_round.sn` | Runs an AES-inspired encrypt/decrypt round trip. |
 | `examples/Collatz.sn` | Prints a Collatz sequence using a byte function. |
+| `examples/formatted_input.sn` | Parses two signed integers with a compile-time input format. |
 
 ## Development
 

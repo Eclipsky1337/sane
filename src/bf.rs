@@ -1,8 +1,8 @@
-use crate::ast::{BinOp, ReturnType, UnOp, ValueType};
+use crate::ast::{BinOp, FormatSpec, ReturnType, UnOp, ValueType};
 use crate::ir::{BlockId, Op, Terminator};
 use crate::sema::{
-    ArrayLayout, MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedProgram, ResolvedStmt as Stmt,
-    ValueLayout, WORK_CELL_COUNT,
+    ArrayLayout, MAX_CALL_DEPTH, ResolvedExpr as Expr, ResolvedInputTarget, ResolvedProgram,
+    ResolvedStmt as Stmt, ValueLayout, WORK_CELL_COUNT,
 };
 
 const T0: usize = 0;
@@ -738,6 +738,11 @@ fn emit_expr_to(
                 "internal error: function call reached direct expression codegen".to_string(),
             );
         }
+        Expr::Input {
+            parts,
+            specs,
+            targets,
+        } => emit_input(parts, specs, targets, dst, out)?,
         Expr::Int(_) => unreachable!("int values are handled before byte codegen"),
         Expr::Fixed(_) => unreachable!("fixed values are handled before byte codegen"),
         Expr::Cast { expr, target } => {
@@ -858,6 +863,446 @@ fn emit_expr_to(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PreparedInputTarget {
+    Scalar(ValueLayout),
+    ArrayConst(ValueLayout),
+    ArrayDynamic { layout: ArrayLayout, index: usize },
+}
+
+fn emit_input(
+    parts: &[Vec<u8>],
+    specs: &[FormatSpec],
+    targets: &[ResolvedInputTarget],
+    dst: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    debug_assert_eq!(parts.len(), specs.len() + 1);
+    debug_assert_eq!(specs.len(), targets.len());
+    let lookahead = out.alloc_control_cell();
+    let has_lookahead = out.alloc_control_cell();
+    let active = out.alloc_control_cell();
+    let count = out.alloc_control_cell();
+    out.clear(lookahead);
+    out.clear(has_lookahead);
+    out.clear(active);
+    out.add_const(active, 1);
+    out.clear(count);
+
+    for index in 0..specs.len() {
+        emit_input_literal(&parts[index], lookahead, has_lookahead, active, out)?;
+        let trailing = index + 1 == specs.len() && parts[index + 1].is_empty();
+        match specs[index] {
+            FormatSpec::Byte => emit_input_byte_field(
+                &targets[index],
+                lookahead,
+                has_lookahead,
+                active,
+                count,
+                out,
+            )?,
+            FormatSpec::Decimal => emit_input_decimal_field(
+                &targets[index],
+                trailing,
+                lookahead,
+                has_lookahead,
+                active,
+                count,
+                out,
+            )?,
+        }
+    }
+    emit_input_literal(
+        parts.last().expect("input format has a trailing part"),
+        lookahead,
+        has_lookahead,
+        active,
+        out,
+    )?;
+
+    let tmp = alloc_temp(&[dst])?;
+    out.clear(dst);
+    out.copy_add(count, dst, tmp);
+    out.free_control_cells(4);
+    Ok(())
+}
+
+fn emit_input_literal(
+    bytes: &[u8],
+    lookahead: usize,
+    has_lookahead: usize,
+    active: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    for &byte in bytes {
+        emit_when(active, out, |out| {
+            emit_input_take(lookahead, has_lookahead, out)?;
+            let matched = out.alloc_control_cell();
+            emit_cell_eq_const(lookahead, byte, matched, out);
+            out.bool_and(active, matched, T0);
+            out.free_control_cells(1);
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn emit_input_byte_field(
+    target: &ResolvedInputTarget,
+    lookahead: usize,
+    has_lookahead: usize,
+    active: usize,
+    count: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let prepared = prepare_input_target(target, active, out)?;
+    emit_when(active, out, |out| {
+        emit_input_take(lookahead, has_lookahead, out)?;
+        let nonzero = out.alloc_control_cell();
+        out.clear(nonzero);
+        out.copy_add(lookahead, nonzero, T0);
+        out.boolify(nonzero, T0);
+        out.bool_and(active, nonzero, T0);
+        out.free_control_cells(1);
+        Ok(())
+    })?;
+    emit_when(active, out, |out| {
+        let source = ValueLayout::byte(lookahead);
+        emit_store_input_value(prepared, source, out)?;
+        out.add_const(count, 1);
+        Ok(())
+    })?;
+    free_prepared_input_target(prepared, out);
+    Ok(())
+}
+
+fn emit_input_decimal_field(
+    target: &ResolvedInputTarget,
+    trailing: bool,
+    lookahead: usize,
+    has_lookahead: usize,
+    active: usize,
+    count: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let prepared = prepare_input_target(target, active, out)?;
+    let base = out.alloc_control_cell();
+    for _ in 1..11 {
+        out.alloc_control_cell();
+    }
+    let candidate = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let sign = base + 4;
+    let digits = base + 5;
+    let parsing = base + 6;
+    let digit_flag = base + 7;
+    let digit = base + 8;
+    let allowed = base + 9;
+    let delimiter_ok = base + 10;
+    for cell in candidate.cells() {
+        out.clear(cell);
+    }
+    for cell in sign..=delimiter_ok {
+        out.clear(cell);
+    }
+
+    emit_when(active, out, |out| {
+        emit_input_take(lookahead, has_lookahead, out)?;
+        if target.value_type() == ValueType::Int {
+            let minus = out.alloc_control_cell();
+            emit_cell_eq_const(lookahead, b'-', minus, out);
+            emit_when(minus, out, |out| {
+                out.clear(sign);
+                out.add_const(sign, 1);
+                emit_input_take(lookahead, has_lookahead, out)
+            })?;
+            out.free_control_cells(1);
+        }
+
+        out.clear(parsing);
+        out.add_const(parsing, 1);
+        out.goto(parsing);
+        out.code.push('[');
+        out.clear(parsing);
+        emit_cell_is_digit(lookahead, digit_flag, out);
+        emit_when(digit_flag, out, |out| {
+            out.clear(digit);
+            out.copy_add(lookahead, digit, T0);
+            out.sub_const(digit, b'0');
+            emit_decimal_step_allowed(candidate, digit, sign, target.value_type(), allowed, out)?;
+            out.bool_and(active, allowed, T0);
+            emit_when(active, out, |out| {
+                emit_int_mul(&Expr::Var(candidate), &Expr::Int(10), candidate, out)?;
+                emit_int_add_sub(
+                    &Expr::Var(candidate),
+                    &Expr::Var(ValueLayout::byte(digit)),
+                    BinOp::Add,
+                    candidate,
+                    out,
+                )?;
+                out.clear(digits);
+                out.add_const(digits, 1);
+                emit_input_take(lookahead, has_lookahead, out)?;
+                out.clear(parsing);
+                out.add_const(parsing, 1);
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        out.goto(parsing);
+        out.code.push(']');
+        Ok(())
+    })?;
+
+    out.bool_and(active, digits, T0);
+    if trailing {
+        emit_input_trailing_delimiter_ok(lookahead, delimiter_ok, out);
+        out.bool_and(active, delimiter_ok, T0);
+    } else {
+        emit_when(active, out, |out| {
+            out.clear(has_lookahead);
+            out.add_const(has_lookahead, 1);
+            Ok(())
+        })?;
+    }
+
+    emit_when(active, out, |out| {
+        if target.value_type() == ValueType::Int {
+            negate_layout_if(candidate, sign, out)?;
+        }
+        emit_store_input_value(prepared, candidate, out)?;
+        out.add_const(count, 1);
+        Ok(())
+    })?;
+
+    out.free_control_cells(11);
+    free_prepared_input_target(prepared, out);
+    Ok(())
+}
+
+fn emit_decimal_step_allowed(
+    candidate: ValueLayout,
+    digit: usize,
+    sign: usize,
+    target_type: ValueType,
+    dst: usize,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    let base = out.alloc_control_cell();
+    for _ in 1..9 {
+        out.alloc_control_cell();
+    }
+    let threshold = ValueLayout {
+        base,
+        value_type: ValueType::Int,
+    };
+    let less = base + 4;
+    let equal = base + 5;
+    let digit_limit = base + 6;
+    let digit_ok = base + 7;
+    let equal_digit = base + 8;
+    let (threshold_value, digit_limit_value) = match target_type {
+        ValueType::Byte => (25, 6),
+        ValueType::Int => (214_748_364, 8),
+        ValueType::Fixed => unreachable!("fixed input rejected during semantic analysis"),
+    };
+    emit_int_to(&Expr::Int(threshold_value), threshold, out)?;
+    emit_int_unsigned_less(candidate, threshold, less, out)?;
+    emit_int_equality(
+        &Expr::Var(candidate),
+        &Expr::Var(threshold),
+        BinOp::Eq,
+        equal,
+        out,
+    )?;
+    out.clear(digit_limit);
+    out.add_const(digit_limit, digit_limit_value);
+    if target_type == ValueType::Int {
+        out.copy_add(sign, digit_limit, T0);
+    }
+    emit_cells_less_preserve(digit, digit_limit, digit_ok, out);
+    out.clear(equal_digit);
+    out.copy_add(equal, equal_digit, T0);
+    out.clear(out.w(6));
+    out.copy_add(digit_ok, out.w(6), T0);
+    out.bool_and(equal_digit, out.w(6), T0);
+    out.clear(dst);
+    out.copy_add(less, dst, T0);
+    out.move_add(equal_digit, dst);
+    out.boolify(dst, T0);
+    out.free_control_cells(9);
+    Ok(())
+}
+
+fn emit_input_trailing_delimiter_ok(cell: usize, dst: usize, out: &mut BfOut) {
+    let flag = out.alloc_control_cell();
+    out.clear(dst);
+    for value in [0, b'\n', b'\r'] {
+        emit_cell_eq_const(cell, value, flag, out);
+        out.move_add(flag, dst);
+        out.boolify(dst, T0);
+    }
+    out.free_control_cells(1);
+}
+
+fn prepare_input_target(
+    target: &ResolvedInputTarget,
+    active: usize,
+    out: &mut BfOut,
+) -> Result<PreparedInputTarget, String> {
+    match target {
+        ResolvedInputTarget::Scalar(layout) => Ok(PreparedInputTarget::Scalar(*layout)),
+        ResolvedInputTarget::Array { layout, index } => {
+            if let Some(index) = const_eval(index) {
+                Ok(PreparedInputTarget::ArrayConst(array_elem(
+                    *layout,
+                    usize::from(index),
+                )?))
+            } else {
+                let index_cell = out.alloc_control_cell();
+                emit_when(active, out, |out| {
+                    emit_expr_to(index, index_cell, out, &[index_cell])
+                })?;
+                Ok(PreparedInputTarget::ArrayDynamic {
+                    layout: *layout,
+                    index: index_cell,
+                })
+            }
+        }
+    }
+}
+
+fn free_prepared_input_target(target: PreparedInputTarget, out: &mut BfOut) {
+    if matches!(target, PreparedInputTarget::ArrayDynamic { .. }) {
+        out.free_control_cells(1);
+    }
+}
+
+fn emit_store_input_value(
+    target: PreparedInputTarget,
+    source: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    match target {
+        PreparedInputTarget::Scalar(dst) | PreparedInputTarget::ArrayConst(dst) => {
+            copy_input_value(source, dst, out);
+        }
+        PreparedInputTarget::ArrayDynamic { layout, index } => {
+            let flag = out.alloc_control_cell();
+            let expected = out.alloc_control_cell();
+            for element_index in 0..layout.len {
+                out.clear(flag);
+                out.copy_add(index, flag, T0);
+                out.clear(expected);
+                out.set_const(expected, element_index as u8);
+                out.eq(flag, expected);
+                out.goto(flag);
+                out.code.push('[');
+                out.clear(flag);
+                copy_input_value(source, layout.element(element_index), out);
+                out.goto(flag);
+                out.code.push(']');
+            }
+            out.free_control_cells(2);
+        }
+    }
+    Ok(())
+}
+
+fn copy_input_value(source: ValueLayout, dst: ValueLayout, out: &mut BfOut) {
+    match dst.value_type {
+        ValueType::Byte => {
+            if source.base != dst.base {
+                out.clear(dst.base);
+                out.copy_add(source.base, dst.base, T0);
+            }
+        }
+        ValueType::Int => copy_int_layout(source, dst, out),
+        ValueType::Fixed => unreachable!("fixed input rejected during semantic analysis"),
+    }
+}
+
+fn emit_input_take(lookahead: usize, has_lookahead: usize, out: &mut BfOut) -> Result<(), String> {
+    let need_read = out.alloc_control_cell();
+    out.clear(need_read);
+    out.copy_add(has_lookahead, need_read, T0);
+    out.logical_not(need_read, T0);
+    emit_when(need_read, out, |out| {
+        out.read(lookahead);
+        Ok(())
+    })?;
+    out.clear(has_lookahead);
+    out.free_control_cells(1);
+    Ok(())
+}
+
+fn emit_when<F>(flag: usize, out: &mut BfOut, body: F) -> Result<(), String>
+where
+    F: FnOnce(&mut BfOut) -> Result<(), String>,
+{
+    let guard = out.alloc_control_cell();
+    out.clear(guard);
+    out.copy_add(flag, guard, T0);
+    out.boolify(guard, T0);
+    out.goto(guard);
+    out.code.push('[');
+    out.clear(guard);
+    body(out)?;
+    out.goto(guard);
+    out.code.push(']');
+    out.free_control_cells(1);
+    Ok(())
+}
+
+fn emit_cell_eq_const(cell: usize, value: u8, dst: usize, out: &mut BfOut) {
+    let left = out.alloc_control_cell();
+    let right = out.alloc_control_cell();
+    out.clear(left);
+    out.copy_add(cell, left, T0);
+    out.clear(right);
+    out.set_const(right, value);
+    out.eq(left, right);
+    out.clear(dst);
+    out.move_add(left, dst);
+    out.free_control_cells(2);
+}
+
+fn emit_cell_is_digit(cell: usize, dst: usize, out: &mut BfOut) {
+    let below_zero = out.alloc_control_cell();
+    let below_ten = out.alloc_control_cell();
+    emit_cell_less_const(cell, b'0', below_zero, out);
+    out.logical_not(below_zero, T0);
+    emit_cell_less_const(cell, b':', below_ten, out);
+    out.bool_and(below_zero, below_ten, T0);
+    out.clear(dst);
+    out.move_add(below_zero, dst);
+    out.free_control_cells(2);
+}
+
+fn emit_cell_less_const(cell: usize, value: u8, dst: usize, out: &mut BfOut) {
+    let left = out.alloc_control_cell();
+    let right = out.alloc_control_cell();
+    out.clear(left);
+    out.copy_add(cell, left, T0);
+    out.clear(right);
+    out.set_const(right, value);
+    out.less_cells(left, right, dst);
+    out.free_control_cells(2);
+}
+
+fn emit_cells_less_preserve(left: usize, right: usize, dst: usize, out: &mut BfOut) {
+    let left_copy = out.alloc_control_cell();
+    let right_copy = out.alloc_control_cell();
+    out.clear(left_copy);
+    out.copy_add(left, left_copy, T0);
+    out.clear(right_copy);
+    out.copy_add(right, right_copy, T0);
+    out.less_cells(left_copy, right_copy, dst);
+    out.free_control_cells(2);
 }
 
 fn emit_array_get_byte(
@@ -1087,6 +1532,7 @@ fn const_eval(expr: &Expr) -> Option<u8> {
         Expr::Var(_) => None,
         Expr::ArrayGet { .. } => None,
         Expr::Call { .. } => None,
+        Expr::Input { .. } => None,
         Expr::Unary { op, expr } => {
             let value = const_eval(expr)?;
             match op {

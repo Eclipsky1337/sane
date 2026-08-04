@@ -1,0 +1,11 @@
+let left: int;
+let right: int;
+
+puts "enter two signed integers: ";
+let matched: byte = input("{} {}", left, right);
+
+if matched == 2 {
+    print "{} + {} = {}\n", left, right, left + right;
+} else {
+    print "input stopped after {} successful fields\n", matched;
+}

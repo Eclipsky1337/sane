@@ -30,12 +30,12 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] signed decimal output and raw byte input
   - [x] function values and typed spills
   - [x] four-cell arrays and indexing
-- [ ] Phase 5: compile-time formatted input
-  - [ ] `input` syntax, AST, and semantic validation
-  - [ ] typed decimal and raw-byte placeholders
-  - [ ] conversion-count result and deterministic failure behavior
-  - [ ] structured and PC backend lowering
-  - [ ] tests, examples, CLI documentation, and language documentation
+- [x] Phase 5: compile-time formatted input
+  - [x] `input` syntax, AST, and semantic validation
+  - [x] typed decimal and raw-byte placeholders
+  - [x] conversion-count result and deterministic failure behavior
+  - [x] structured and PC backend lowering
+  - [x] tests, examples, CLI documentation, and language documentation
 - [x] Phase 6: Q16.16 fixed-point values
   - [x] representation and language design
   - [x] literals, declarations, assignment, and casts
@@ -59,7 +59,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 150 tests
+- The full test suite currently contains 159 tests
 
 Before starting work:
 
