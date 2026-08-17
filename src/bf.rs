@@ -1282,6 +1282,10 @@ fn emit_store_input_value(
             copy_input_value(source, dst, out);
         }
         PreparedInputTarget::ArrayDynamic { layout, index } => {
+            if layout.uses_wide_array_primitive() {
+                emit_wide_array_set_prepared(layout, index, source, out);
+                return Ok(());
+            }
             let flag = out.alloc_control_cell();
             let expected = out.alloc_control_cell();
             for element_index in 0..layout.len {
@@ -1491,6 +1495,56 @@ fn emit_int_array_get_dynamic(
     dst: ValueLayout,
     out: &mut BfOut,
 ) -> Result<(), String> {
+    if !layout.uses_wide_array_primitive() {
+        return emit_int_array_get_dynamic_linear(layout, index, dst, out);
+    }
+    let index_cell = out.alloc_control_cell();
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
+    fanout_wide_array_index(index_cell, layout.base, out);
+    for lane in 0..4 {
+        out.tritonio_array_get_strided(layout.base + lane, 4);
+    }
+    for cell in dst.cells() {
+        out.clear(cell);
+    }
+    for offset in 0..4 {
+        out.move_add(layout.base + 12 + offset, dst.base + offset);
+    }
+    out.free_control_cells(1);
+    Ok(())
+}
+
+fn emit_int_array_set_dynamic(
+    layout: ArrayLayout,
+    index: &Expr,
+    expr: &Expr,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    if !layout.uses_wide_array_primitive() {
+        return emit_int_array_set_dynamic_linear(layout, index, expr, out);
+    }
+    let value_base = out.alloc_control_cell();
+    for _ in 1..4 {
+        out.alloc_control_cell();
+    }
+    let index_cell = out.alloc_control_cell();
+    let value = ValueLayout {
+        base: value_base,
+        value_type: layout.value_type,
+    };
+    emit_value_to(expr, value, out)?;
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
+    emit_wide_array_set_prepared(layout, index_cell, value, out);
+    out.free_control_cells(5);
+    Ok(())
+}
+
+fn emit_int_array_get_dynamic_linear(
+    layout: ArrayLayout,
+    index: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
     let index_cell = out.alloc_control_cell();
     let flag = out.alloc_control_cell();
     let expected = out.alloc_control_cell();
@@ -1515,7 +1569,7 @@ fn emit_int_array_get_dynamic(
     Ok(())
 }
 
-fn emit_int_array_set_dynamic(
+fn emit_int_array_set_dynamic_linear(
     layout: ArrayLayout,
     index: &Expr,
     expr: &Expr,
@@ -1530,9 +1584,9 @@ fn emit_int_array_set_dynamic(
     let expected = out.alloc_control_cell();
     let value = ValueLayout {
         base: value_base,
-        value_type: ValueType::Int,
+        value_type: layout.value_type,
     };
-    emit_int_to(expr, value, out)?;
+    emit_value_to(expr, value, out)?;
     emit_expr_to(index, index_cell, out, &[index_cell])?;
     for element_index in 0..layout.len {
         out.clear(flag);
@@ -1549,6 +1603,42 @@ fn emit_int_array_set_dynamic(
     }
     out.free_control_cells(7);
     Ok(())
+}
+
+fn fanout_wide_array_index(index: usize, base: usize, out: &mut BfOut) {
+    for cell in base + 4..base + 12 {
+        out.clear(cell);
+    }
+    out.goto(index);
+    out.code.push('[');
+    out.code.push('-');
+    for cell in base + 4..base + 12 {
+        out.goto(cell);
+        out.code.push('+');
+    }
+    out.goto(index);
+    out.code.push(']');
+}
+
+fn emit_wide_array_set_prepared(
+    layout: ArrayLayout,
+    index: usize,
+    value: ValueLayout,
+    out: &mut BfOut,
+) {
+    debug_assert!(matches!(
+        layout.value_type,
+        ValueType::Int | ValueType::Fixed
+    ));
+    debug_assert_eq!(value.cell_width(), 4);
+    fanout_wide_array_index(index, layout.base, out);
+    for offset in 0..4 {
+        out.clear(layout.base + 12 + offset);
+        out.move_add(value.base + offset, layout.base + 12 + offset);
+    }
+    for lane in 0..4 {
+        out.tritonio_array_set_strided(layout.base + lane, 4);
+    }
 }
 
 fn emit_const_binary_to(
@@ -3467,15 +3557,36 @@ impl BfOut {
     }
 
     fn tritonio_array_set(&mut self, base: usize) {
-        self.goto(base);
-        self.code.push_str(
-            ">[>>>[-<<<<+>>>>]<[->+<]<[->+<]<[->+<]>-]>>>[-]<[->+<]<[[-<+>]<<<[->>>>+<<<<]>>-]<<",
-        );
+        self.tritonio_array_set_strided(base, 1);
     }
 
     fn tritonio_array_get(&mut self, base: usize) {
+        self.tritonio_array_get_strided(base, 1);
+    }
+
+    fn tritonio_array_set_strided(&mut self, base: usize, stride: usize) {
         self.goto(base);
-        self.code
-            .push_str(">[>>>[-<<<<+>>>>]<<[->+<]<[->+<]>-]>>>[-<+<<+>>>]<<<[->>>+<<<]>[[-<+>]>[-<+>]<<<<[->>>>+<<<<]>>-]<<");
+        self.push_strided_bf(
+            ">[>>>[-<<<<+>>>>]<[->+<]<[->+<]<[->+<]>-]>>>[-]<[->+<]<[[-<+>]<<<[->>>>+<<<<]>>-]<<",
+            stride,
+        );
+    }
+
+    fn tritonio_array_get_strided(&mut self, base: usize, stride: usize) {
+        self.goto(base);
+        self.push_strided_bf(
+            ">[>>>[-<<<<+>>>>]<<[->+<]<[->+<]>-]>>>[-<+<<+>>>]<<<[->>>+<<<]>[[-<+>]>[-<+>]<<<<[->>>>+<<<<]>>-]<<",
+            stride,
+        );
+    }
+
+    fn push_strided_bf(&mut self, code: &str, stride: usize) {
+        for instruction in code.bytes() {
+            match instruction {
+                b'>' => self.code.push_str(&">".repeat(stride)),
+                b'<' => self.code.push_str(&"<".repeat(stride)),
+                _ => self.code.push(instruction as char),
+            }
+        }
     }
 }

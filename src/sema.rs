@@ -8,6 +8,7 @@ use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
+pub const WIDE_ARRAY_PREFIX: usize = 16;
 pub const MAX_CALL_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,19 +42,27 @@ pub struct ArrayLayout {
 }
 
 impl ArrayLayout {
-    pub const fn storage_len(self) -> usize {
+    pub const fn uses_wide_array_primitive(self) -> bool {
+        matches!(self.value_type, ValueType::Int | ValueType::Fixed)
+    }
+
+    pub const fn data_offset(self) -> usize {
         match self.value_type {
-            ValueType::Byte => 4 + self.len,
-            ValueType::Int | ValueType::Fixed => self.len * 4,
+            ValueType::Byte => 4,
+            ValueType::Int | ValueType::Fixed if self.uses_wide_array_primitive() => {
+                WIDE_ARRAY_PREFIX
+            }
+            ValueType::Int | ValueType::Fixed => 0,
         }
+    }
+
+    pub const fn storage_len(self) -> usize {
+        self.data_offset() + self.len * self.value_type.cell_width()
     }
 
     pub const fn element(self, index: usize) -> ValueLayout {
         ValueLayout {
-            base: match self.value_type {
-                ValueType::Byte => self.base + 4 + index,
-                ValueType::Int | ValueType::Fixed => self.base + index * 4,
-            },
+            base: self.base + self.data_offset() + index * self.value_type.cell_width(),
             value_type: self.value_type,
         }
     }
@@ -615,10 +624,12 @@ impl Resolver {
                     Some(value_type) => *value_type,
                     None => self.infer_array_type(init.as_ref())?,
                 };
-                let storage_len = match value_type {
-                    ValueType::Byte => 4 + len,
-                    ValueType::Int | ValueType::Fixed => len * 4,
+                let provisional_layout = ArrayLayout {
+                    base: 0,
+                    len,
+                    value_type,
                 };
+                let storage_len = provisional_layout.storage_len();
                 let base = self.alloc_scope_block(storage_len);
                 let layout = ArrayLayout {
                     base,

@@ -136,6 +136,24 @@ fn fixed_constants_arrays_and_dynamic_indexes_use_four_cell_values() {
 }
 
 #[test]
+fn fixed_dynamic_arrays_use_the_stride_four_primitive() {
+    let src = r#"
+        let values: fixed[2];
+        values[0] = 1.25;
+        values[1] = -0.5;
+        let index: byte = 1;
+        values[index] *= 1.5;
+        print values[index];
+        puts " ";
+        print values[0];
+    "#;
+    let code = compile_source(src).unwrap();
+    assert_eq!(run_bf(&code, &[]), b"-0.75 1.25");
+    let pc_code = compile_pc(src);
+    assert_eq!(run_bf(&pc_code, &[]), b"-0.75 1.25");
+}
+
+#[test]
 fn fixed_multiplication_and_division_cover_cross_cell_boundaries() {
     let src = r#"
         print 30000.0 * 2.0;

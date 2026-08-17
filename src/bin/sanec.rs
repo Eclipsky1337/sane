@@ -149,10 +149,13 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                 len,
                 value_type,
             } => {
-                let first = match value_type {
-                    sane::ast::ValueType::Byte => base + 4,
-                    sane::ast::ValueType::Int | sane::ast::ValueType::Fixed => *base,
-                };
+                let first = sane::sema::ArrayLayout {
+                    base: *base,
+                    len: *len,
+                    value_type: *value_type,
+                }
+                .element(0)
+                .base;
                 let width = value_type.cell_width();
                 let last = if *len == 0 {
                     first - 1

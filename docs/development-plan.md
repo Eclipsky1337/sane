@@ -54,7 +54,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [ ] track known-zero control cells
   - [ ] replace large compile-time unrolling with runtime loops
   - [ ] specialize constant arithmetic and comparisons
-  - [ ] compact dynamic wide-array access
+  - [x] compact dynamic wide-array access
   - [ ] evaluate shared runtime microcode
   - [x] optimize PC runtime tape layout
   - [ ] reconsider dispatcher and call-level transformations
@@ -74,7 +74,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 166 tests
+- The full test suite currently contains 170 tests
 
 Before starting work:
 
@@ -499,6 +499,55 @@ For every item below:
 - add focused tests for the transformation
 - keep the change only when its size or execution benefit is measurable
 
+### Optimization Axes: Value Movement And Microcode
+
+Generated BF cost has two related but distinct sources: moving values between
+cells and expanding the microcode that transforms or controls those values.
+Treat these as separate optimization axes and record both effects in each
+before/after measurement.
+
+#### A. Reduce Value Movement
+
+Prefer producing a value directly in its final location and preserving it
+there. Prioritize:
+
+- eliminate intermediate copies when an expression can target its destination
+- use consuming moves when the source is dead, while keeping copies when it is
+  still live
+- coalesce adjacent value transfers and reuse already-computed indexes
+- lower compound assignments in place where aliasing and evaluation order are
+  preserved
+- track known-zero cells to remove redundant clears before transfers
+- place frequently interacting cells closer together when the layout change
+  reduces pointer movement
+
+These transformations should be expressed in width-aware value operations so
+that `byte`, `int`, and `fixed` share the same lowering structure. Measure raw
+BF size, pointer-movement instructions, and executed operations separately.
+
+#### B. Reduce Microcode
+
+Avoid generating or executing the same semantic machinery more often than
+necessary. Prioritize:
+
+- token-aware BF peephole simplification and cancellation
+- constant folding and compact implementations for common constant operands
+- fusion of comparison results with the branch that immediately consumes them
+- runtime loops for large fixed-count expansions when execution cost remains
+  acceptable
+- sharing large repeated routines such as multiplication, division, decimal
+  conversion, and formatted input
+- operation selection based on value width, known ranges, and whether a result
+  is actually used
+
+Microcode sharing may add calls or dispatcher work, so retain it only when the
+reduction in generated size and repeated expansion is material. Keep the
+semantic operation boundary explicit even when its implementation is shared.
+
+The backlog below assigns existing items to these two axes. Implement one
+focused transformation at a time, add a regression test, and retain the
+benchmark result before proceeding to the next item.
+
 ### 1. Remove Unreachable IR Blocks
 
 Compute reachability from the program entry while following calls into function
@@ -633,6 +682,36 @@ every index.
 Cover loads, stores, raw input destinations where applicable, and formatted
 input destinations. Preserve the current unchecked-index semantics unless a
 separate language change explicitly adds bounds checking.
+
+Implemented uniformly for all `int` and `fixed` arrays. Each array reserves a
+16-cell prefix containing four interleaved Tritonio metadata lanes. The dynamic
+index is evaluated once and consumed by a single fan-out loop that initializes
+all eight index-state cells. Four copies of the byte primitive then perform
+stride-four loads or stores while preserving four-cell little-endian element
+layout.
+
+Benchmarking showed that the prefix increases total output size for small
+programs because it moves the shared scratch region farther right, despite the
+primitive itself being smaller than linear selection from length 2 onward. The
+uniform layout is retained to keep wide-array lowering and memory layout simple
+and predictable. A representative structured-backend program with one dynamic
+store, one dynamic load, and decimal output measured these total-size changes:
+
+| Length | Change from linear selection |
+| ---: | ---: |
+| 3 | +32.30% |
+| 4 | +27.51% |
+| 8 | +12.84% |
+| 10 | +7.25% |
+| 12 | +2.41% |
+| 13 | +0.21% |
+| 14 | -1.86% |
+| 16 | -5.34% |
+| 32 | -26.48% |
+
+The primitive is shared by ordinary `int`/`fixed` loads and stores and dynamic
+formatted-input stores. Tests cover aliasing within the same array, repeated
+indexes, fixed compound assignment, both backends, and formatted integer input.
 
 ### 12. Evaluate Shared Runtime Microcode
 

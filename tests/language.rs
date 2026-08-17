@@ -18,6 +18,21 @@ fn scalar_types_define_byte_int_and_fixed_storage_widths() {
     assert_eq!(ValueType::Fixed.cell_width(), 4);
     assert_eq!(byte.cells(), 8..9);
     assert_eq!(int.cells(), 12..16);
+
+    let byte_array = sema::ArrayLayout {
+        base: 20,
+        len: 1,
+        value_type: ValueType::Byte,
+    };
+    let wide_array = sema::ArrayLayout {
+        base: 20,
+        len: 1,
+        value_type: ValueType::Int,
+    };
+    assert!(!byte_array.uses_wide_array_primitive());
+    assert_eq!(byte_array.element(0).base, 24);
+    assert!(wide_array.uses_wide_array_primitive());
+    assert_eq!(wide_array.element(0).base, 20 + sema::WIDE_ARRAY_PREFIX);
 }
 
 #[test]
@@ -267,6 +282,43 @@ fn int_arrays_use_four_cell_elements_and_dynamic_indexes() {
     "#;
     let bf = compile_source(src).unwrap();
     assert_eq!(run_bf(&bf, &[]), b"ABC");
+}
+
+#[test]
+fn dynamic_wide_array_access_preserves_aliases_and_repeated_indexes() {
+    let src = r#"
+        let values: int[4];
+        values[0] = 100;
+        values[1] = -2;
+        values[2] = 65536;
+        values[3] = 7;
+        let source: byte = 1;
+        let destination: byte = 0;
+        values[destination] = values[source];
+        values[source + 1] = values[destination] + 5;
+        print "{} {} {} {}\n", values[destination], values[source], values[2], values[3];
+    "#;
+    let bf = compile_source(src).unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"-2 -2 3 7\n");
+}
+
+#[test]
+fn dynamic_wide_array_primitive_keeps_growth_below_linear_selection() {
+    let compile = |len: usize| {
+        compile_source(&format!(
+            "let values: int[{len}];\
+             let index: byte = {};\
+             values[index] = 123456;\
+             let value: int = values[index];\
+             put value as byte;",
+            len - 1
+        ))
+        .unwrap()
+    };
+
+    let fourteen = compile(14);
+    let thirty_two = compile(32);
+    assert!(thirty_two.len() < fourteen.len() * 2);
 }
 
 #[test]

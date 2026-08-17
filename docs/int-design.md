@@ -50,8 +50,9 @@ PC runtime values use these widths:
 - byte spill: one cell
 - int spill: four consecutive cells
 
-`int[]` elements use four-cell strides. Byte arrays retain their existing
-single-cell element layout.
+`int[]` elements use four-cell strides. Every `int[]` reserves a 16-cell prefix
+for four interleaved stride-four dynamic-access lanes, regardless of length.
+Byte arrays retain their existing single-cell element layout.
 
 ## Operations
 

@@ -129,6 +129,20 @@ fn input_updates_dynamic_array_targets_left_to_right() {
 }
 
 #[test]
+fn input_writes_stride_four_int_array_targets() {
+    let src = r#"
+        let values: int[2];
+        let index: byte = 1;
+        let matched = input("{}", values[index]);
+        print "{} {}\n", matched, values[index];
+    "#;
+    let code = compile_source(src).unwrap();
+    assert_eq!(run_bf(&code, b"-123456\n"), b"1 -123456\n");
+    let pc_code = compile_pc(src);
+    assert_eq!(run_bf(&pc_code, b"-123456\n"), b"1 -123456\n");
+}
+
+#[test]
 fn input_behaves_the_same_in_pc_backend() {
     let src = r#"
         fn identity(value: int) -> int { return value; }
