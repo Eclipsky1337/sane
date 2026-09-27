@@ -3308,18 +3308,26 @@ impl BfOut {
 
     fn tritonio_array_set_strided(&mut self, base: usize, stride: usize) {
         self.goto(base);
-        self.push_strided_bf(
-            ">[>>>[-<<<<+>>>>]<[->+<]<[->+<]<[->+<]>-]>>>[-]<[->+<]<[[-<+>]<<<[->>>>+<<<<]>>-]<<",
-            stride,
-        );
+        match stride {
+            1 => self.code.push_str(crate::interpreter::ARRAY_SET_MARKER),
+            4 => self
+                .code
+                .push_str(crate::interpreter::ARRAY_SET_WIDE_MARKER),
+            _ => {}
+        }
+        self.push_strided_bf(crate::interpreter::ARRAY_SET_BF, stride);
     }
 
     fn tritonio_array_get_strided(&mut self, base: usize, stride: usize) {
         self.goto(base);
-        self.push_strided_bf(
-            ">[>>>[-<<<<+>>>>]<<[->+<]<[->+<]>-]>>>[-<+<<+>>>]<<<[->>>+<<<]>[[-<+>]>[-<+>]<<<<[->>>>+<<<<]>>-]<<",
-            stride,
-        );
+        match stride {
+            1 => self.code.push_str(crate::interpreter::ARRAY_GET_MARKER),
+            4 => self
+                .code
+                .push_str(crate::interpreter::ARRAY_GET_WIDE_MARKER),
+            _ => {}
+        }
+        self.push_strided_bf(crate::interpreter::ARRAY_GET_BF, stride);
     }
 
     fn push_strided_bf(&mut self, code: &str, stride: usize) {

@@ -136,5 +136,20 @@ The normal interpreter parses Brainfuck into higher-level operations before
 execution. The debugger intentionally uses raw instructions so breakpoints and
 single stepping correspond directly to Brainfuck program counters.
 
+The interpreter also fuses contiguous pointer moves and cell updates into
+blocks after recognizing clear and linear-transfer loops. Blocks validate the
+pointer range before applying their updates; input, output, loops, and profiling
+markers remain separate operations.
+
+For dynamic array reads and writes, the PC generator marks its unchanged
+Brainfuck traversal microcode with BF-safe text. The interpreter recognizes the
+exact byte-array template or the stride-four template used by each lane of
+`int` and `fixed` arrays. When the metadata cells have the expected state and
+the entire traversal fits on the tape, it accesses the selected element
+directly. Otherwise it runs the original Brainfuck instructions. Other
+interpreters ignore the markers, and arithmetic still uses its ordinary
+Brainfuck lowering. A future MMIO region with per-write side effects must
+bypass this shortcut when the array traversal touches it.
+
 Symbol comments produced by `sanec -s` are ignored during execution but parsed
 by the debugger for tape inspection.
