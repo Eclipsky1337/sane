@@ -8,15 +8,6 @@ use crate::sema::{
 const T0: usize = 0;
 const GENERAL_TEMP_COUNT: usize = 8;
 
-pub fn compile(program: &ResolvedProgram) -> Result<String, String> {
-    if !program.functions.is_empty() {
-        return Err("functions require the pc backend (`-b pc`)".to_string());
-    }
-    let mut out = BfOut::new(program.symbols.scratch_base());
-    emit_stmts(&program.stmts, &mut out, None)?;
-    Ok(optimize_bf(&out.code))
-}
-
 pub fn compile_pc(program: &ResolvedProgram) -> Result<String, String> {
     compile_pc_inner(program, false)
 }
@@ -416,44 +407,7 @@ fn block_value(block: BlockId) -> Result<u8, String> {
     u8::try_from(block.0).map_err(|_| "pc backend supports at most 256 basic blocks".to_string())
 }
 
-#[derive(Debug, Clone, Copy)]
-struct LoopContext {
-    guard: usize,
-    active: usize,
-    recheck: usize,
-    continue_target: Option<usize>,
-}
-
-fn emit_stmts(
-    stmts: &[Stmt],
-    out: &mut BfOut,
-    loop_ctx: Option<LoopContext>,
-) -> Result<(), String> {
-    for stmt in stmts {
-        if let Some(ctx) = loop_ctx {
-            emit_controlled_stmt(stmt, out, ctx)?;
-        } else {
-            emit_stmt(stmt, out, None)?;
-        }
-    }
-    Ok(())
-}
-
-fn emit_controlled_stmt(stmt: &Stmt, out: &mut BfOut, ctx: LoopContext) -> Result<(), String> {
-    let exec = out.alloc_control_cell();
-    out.clear(exec);
-    out.copy_add(ctx.active, exec, T0);
-    out.goto(exec);
-    out.code.push('[');
-    out.clear(exec);
-    emit_stmt(stmt, out, Some(ctx))?;
-    out.goto(exec);
-    out.code.push(']');
-    out.free_control_cells(1);
-    Ok(())
-}
-
-fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Result<(), String> {
+fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
     match stmt {
         Stmt::Const => {}
         Stmt::Let { layout, init } => {
@@ -506,43 +460,7 @@ fn emit_stmt(stmt: &Stmt, out: &mut BfOut, loop_ctx: Option<LoopContext>) -> Res
             out.read(layout.base);
         }
         Stmt::ReadArray { layout, index } => emit_array_read(*layout, index, out)?,
-        Stmt::Call { .. } | Stmt::Return(_) => {
-            return Err(
-                "internal error: function statement reached structured backend".to_string(),
-            );
-        }
-        Stmt::Break => {
-            let ctx = loop_ctx.ok_or_else(|| "internal error: break outside loop".to_string())?;
-            out.clear(ctx.active);
-            out.clear(ctx.recheck);
-            out.clear(ctx.guard);
-            if let Some(continue_target) = ctx.continue_target {
-                out.clear(continue_target);
-            }
-        }
-        Stmt::Continue => {
-            let ctx =
-                loop_ctx.ok_or_else(|| "internal error: continue outside loop".to_string())?;
-            out.clear(ctx.active);
-            if let Some(continue_target) = ctx.continue_target {
-                out.clear(continue_target);
-                out.add_const(continue_target, 1);
-            }
-        }
-        Stmt::Block(stmts) => emit_stmts(stmts, out, loop_ctx)?,
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => emit_if(cond, then_branch, else_branch, out, loop_ctx)?,
-        Stmt::While { cond, body } => emit_while(cond, body, out)?,
-        Stmt::Loop { body } => emit_for(None, None, None, body, out)?,
-        Stmt::For {
-            init,
-            cond,
-            step,
-            body,
-        } => emit_for(init.as_deref(), cond.as_ref(), step.as_deref(), body, out)?,
+        _ => return Err("internal error: control-flow statement in basic block".to_string()),
     }
     Ok(())
 }
@@ -579,178 +497,6 @@ fn emit_decimal(expr: &Expr, out: &mut BfOut) -> Result<(), String> {
             out.print_fixed_decimal(layout)?;
             out.free_control_cells(4);
         }
-    }
-    Ok(())
-}
-
-fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
-    match stmt {
-        Stmt::Const
-        | Stmt::Let { .. }
-        | Stmt::LetArray { .. }
-        | Stmt::Assign { .. }
-        | Stmt::ArraySet { .. }
-        | Stmt::Put(_)
-        | Stmt::Puts(_)
-        | Stmt::Print(_)
-        | Stmt::Println(_)
-        | Stmt::Read(_)
-        | Stmt::ReadArray { .. } => emit_stmt(stmt, out, None),
-        _ => Err("internal error: control-flow statement in basic block".to_string()),
-    }
-}
-
-fn emit_if(
-    cond: &Expr,
-    then_branch: &[Stmt],
-    else_branch: &[Stmt],
-    out: &mut BfOut,
-    loop_ctx: Option<LoopContext>,
-) -> Result<(), String> {
-    if else_branch.is_empty() {
-        let guard = out.alloc_control_cell();
-        emit_expr_to(cond, guard, out, &[guard])?;
-        out.boolify(guard, T0);
-        out.goto(guard);
-        out.code.push('[');
-        out.clear(guard);
-        emit_stmts(then_branch, out, loop_ctx)?;
-        out.goto(guard);
-        out.code.push(']');
-        out.free_control_cells(1);
-        return Ok(());
-    }
-
-    let guard = out.alloc_control_cell();
-    let else_flag = out.alloc_control_cell();
-    emit_expr_to(cond, guard, out, &[guard, else_flag])?;
-    out.boolify(guard, T0);
-    out.clear(else_flag);
-    out.add_const(else_flag, 1);
-
-    out.goto(guard);
-    out.code.push('[');
-    out.clear(guard);
-    emit_stmts(then_branch, out, loop_ctx)?;
-    out.clear(else_flag);
-    out.goto(guard);
-    out.code.push(']');
-
-    out.goto(else_flag);
-    out.code.push('[');
-    out.clear(else_flag);
-    emit_stmts(else_branch, out, loop_ctx)?;
-    out.goto(else_flag);
-    out.code.push(']');
-
-    out.free_control_cells(2);
-    Ok(())
-}
-
-fn emit_while(cond: &Expr, body: &[Stmt], out: &mut BfOut) -> Result<(), String> {
-    let guard = out.alloc_control_cell();
-    let active = out.alloc_control_cell();
-    let recheck = out.alloc_control_cell();
-    let ctx = LoopContext {
-        guard,
-        active,
-        recheck,
-        continue_target: None,
-    };
-
-    emit_expr_to(cond, guard, out, &[guard])?;
-    out.boolify(guard, T0);
-
-    out.goto(guard);
-    out.code.push('[');
-    out.clear(active);
-    out.add_const(active, 1);
-    out.clear(recheck);
-    out.add_const(recheck, 1);
-    emit_stmts(body, out, Some(ctx))?;
-    out.goto(recheck);
-    out.code.push('[');
-    out.clear(recheck);
-    emit_expr_to(cond, guard, out, &[guard, active, recheck])?;
-    out.boolify(guard, T0);
-    out.goto(recheck);
-    out.code.push(']');
-    out.goto(guard);
-    out.code.push(']');
-
-    out.free_control_cells(3);
-    Ok(())
-}
-
-fn emit_for(
-    init: Option<&Stmt>,
-    cond: Option<&Expr>,
-    step: Option<&Stmt>,
-    body: &[Stmt],
-    out: &mut BfOut,
-) -> Result<(), String> {
-    if let Some(init) = init {
-        emit_stmt(init, out, None)?;
-    }
-
-    let guard = out.alloc_control_cell();
-    let active = out.alloc_control_cell();
-    let recheck = out.alloc_control_cell();
-    let step_flag = out.alloc_control_cell();
-    let ctx = LoopContext {
-        guard,
-        active,
-        recheck,
-        continue_target: Some(step_flag),
-    };
-
-    emit_loop_cond(cond, guard, out, &[guard])?;
-
-    out.goto(guard);
-    out.code.push('[');
-    out.clear(active);
-    out.add_const(active, 1);
-    out.clear(recheck);
-    out.add_const(recheck, 1);
-    out.clear(step_flag);
-
-    emit_stmts(body, out, Some(ctx))?;
-
-    out.copy_add(active, step_flag, T0);
-    out.goto(step_flag);
-    out.code.push('[');
-    out.clear(step_flag);
-    if let Some(step) = step {
-        emit_stmt(step, out, None)?;
-    }
-    out.goto(step_flag);
-    out.code.push(']');
-
-    out.goto(recheck);
-    out.code.push('[');
-    out.clear(recheck);
-    emit_loop_cond(cond, guard, out, &[guard, active, recheck, step_flag])?;
-    out.goto(recheck);
-    out.code.push(']');
-    out.goto(guard);
-    out.code.push(']');
-
-    out.free_control_cells(4);
-    Ok(())
-}
-
-fn emit_loop_cond(
-    cond: Option<&Expr>,
-    guard: usize,
-    out: &mut BfOut,
-    reserved: &[usize],
-) -> Result<(), String> {
-    if let Some(cond) = cond {
-        emit_expr_to(cond, guard, out, reserved)?;
-        out.boolify(guard, T0);
-    } else {
-        out.clear(guard);
-        out.add_const(guard, 1);
     }
     Ok(())
 }
@@ -2775,10 +2521,6 @@ struct BfOut {
 }
 
 impl BfOut {
-    fn new(scratch_base: usize) -> Self {
-        Self::with_control_depth(scratch_base, 0)
-    }
-
     fn with_control_depth(scratch_base: usize, control_depth: usize) -> Self {
         Self {
             code: String::new(),

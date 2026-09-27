@@ -415,10 +415,7 @@ Calls may be standalone statements. A value-returning call used as a statement
 discards its result. A void call cannot be used where an expression value is
 required.
 
-Functions are currently supported only by the PC backend. Compile a function
-program with `sanec`; the compiler automatically selects the PC backend when
-functions are present. Use `sanec -b structured` only when intentionally
-checking structured-backend compatibility.
+All programs, including those with functions, compile through the PC backend.
 
 Each function has a statically allocated frame for its parameters and local
 variables. Nested calls are supported, but recursive call graphs are rejected.

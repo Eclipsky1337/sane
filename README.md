@@ -6,11 +6,9 @@ Sane is a small programming language that compiles to 8-bit Brainfuck.
 - `sanei` runs and debugs Brainfuck programs.
 
 Sane supports byte, signed 32-bit integer, and signed Q16.16 fixed-point values.
-Typed functions use the basic-block IR of the experimental `pc` backend. The
-compiler automatically uses the structured backend for programs without
-functions and the PC backend for programs with functions. The language also
-supports typed compile-time constants, inferred arrays, and compile-time
-checked formatted input and output.
+All programs use basic-block IR and the PC backend, including programs without
+functions. The language also supports typed compile-time constants, inferred
+arrays, and compile-time checked formatted input and output.
 
 ## Quick Start
 
@@ -28,7 +26,7 @@ Expected output:
 toy-aes:ED958E73EFAD3E04336822CC237B065A ok
 ```
 
-Compile a function program with the PC backend:
+Compile a function program:
 
 ```sh
 sanec examples/Collatz.sn -o collatz.bf
@@ -38,7 +36,7 @@ printf "7\n" | sanei collatz.bf
 ## Documentation
 
 - [Language Reference](docs/language.md): syntax, types, functions, arrays, I/O, and control flow.
-- [Compiler](docs/compiler.md): `sanec` usage, backends, diagnostics, and symbol annotations.
+- [Compiler](docs/compiler.md): `sanec` usage, PC backend, diagnostics, and symbol annotations.
 - [Interpreter And Debugger](docs/interpreter.md): `sanei` usage, optimizations, and debugger commands.
 - [Architecture](docs/architecture.md): compilation pipeline, IR, tape layout, and implementation notes.
 - [32-Bit Integer Design](docs/int-design.md): `int` semantics, layout, conversions, and implementation stages.

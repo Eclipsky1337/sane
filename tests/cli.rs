@@ -65,23 +65,21 @@ fn sanec_help_describes_arguments_and_options() {
     assert!(help.contains("source.sn       Read Sane source from file"));
     assert!(help.contains("-o <file>       Write Brainfuck output to <file>"));
     assert!(help.contains("-s              Add BF-safe symbol table comments"));
-    assert!(
-        help.contains("-b <backend>    Select backend: auto, structured, or pc (default: auto)")
-    );
+    assert!(!help.contains("-b <backend>"));
 }
 
 #[test]
-fn sanec_can_compile_with_pc_backend() {
-    let output = run_sanec(&["-b", "pc"], "let x = 3; while x { put '0' + x; x -= 1; }");
+fn sanec_compiles_function_free_programs_with_pc_backend() {
+    let source = "let x = 3; while x { put '0' + x; x -= 1; }";
+    let output = run_sanec(&[], source);
     assert!(output.status.success());
-    assert_eq!(
-        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
-        b"321"
-    );
+    let generated = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(generated, sane::compile_source(source).unwrap());
+    assert_eq!(run_bf(&generated, &[]), b"321");
 }
 
 #[test]
-fn sanec_automatically_selects_pc_for_functions() {
+fn sanec_compiles_functions_with_pc_backend() {
     let output = run_sanec(&[], "fn value() -> byte { return 42; } println value();");
     assert!(output.status.success());
     assert_eq!(
@@ -91,7 +89,7 @@ fn sanec_automatically_selects_pc_for_functions() {
 }
 
 #[test]
-fn sanec_automatically_selects_pc_for_void_functions() {
+fn sanec_compiles_void_functions_with_pc_backend() {
     let output = run_sanec(&[], "fn show() { puts \"ok\\n\"; } show();");
     assert!(output.status.success());
     assert_eq!(
@@ -101,27 +99,13 @@ fn sanec_automatically_selects_pc_for_void_functions() {
 }
 
 #[test]
-fn sanec_can_explicitly_select_auto_backend() {
-    let output = run_sanec(&["-b", "auto"], "put 'A';");
-    assert!(output.status.success());
-    assert_eq!(
-        run_bf(&String::from_utf8(output.stdout).unwrap(), &[]),
-        b"A"
-    );
-}
-
-#[test]
-fn sanec_forced_structured_backend_rejects_functions() {
-    let output = run_sanec(
-        &["-b", "structured"],
-        "fn value() -> byte { return 42; } println value();",
-    );
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("functions require the pc backend"),
-        "{stderr}"
-    );
+fn sanec_rejects_removed_backend_option() {
+    for backend in ["auto", "structured", "pc"] {
+        let output = run_sanec(&["-b", backend], "put 'A';");
+        assert!(!output.status.success(), "{backend}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("unexpected argument `-b`"), "{stderr}");
+    }
 }
 
 #[test]

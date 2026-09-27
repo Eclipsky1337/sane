@@ -5,13 +5,12 @@
 ## Usage
 
 ```text
-Usage: sanec [source.sn] [-o out.bf] [-s] [-b backend]
+Usage: sanec [source.sn] [-o out.bf] [-s]
 
 Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
-  -b <backend>    Select backend: auto, structured, or pc (default: auto)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 ```
@@ -52,30 +51,19 @@ matching, checked byte or signed-int decimal conversion, raw-byte fields, and
 returns the successful conversion count. Runtime format strings are not
 supported.
 
-## Backends
+## Backend
 
-The default `auto` mode selects the structured backend for programs without
-functions and the PC backend for programs containing functions.
-
-The `structured` backend lowers control flow directly to Brainfuck loops and
-guard cells. It generally produces smaller and faster programs for language
-features that do not require functions:
+All programs, with or without functions, lower to basic-block IR and use the
+PC backend. It emits a Brainfuck dispatcher loop and supports byte, int, fixed,
+and void functions, expression and statement calls, and returns:
 
 ```sh
-sanec -b structured program.sn -o program.bf
+sanec examples/Collatz.sn -o collatz.bf
 ```
 
-The experimental `pc` backend lowers the program to basic-block IR and emits a
-Brainfuck dispatcher loop. It supports byte, int, fixed, and void functions,
-expression and statement calls, and returns:
-
-```sh
-sanec -b pc examples/Collatz.sn -o collatz.bf
-```
-
-Use `-b structured` or `-b pc` to force a backend. Forcing the structured
-backend for a program containing functions reports an actionable error. Both
-backends accept the same non-function syntax.
+The former `-b` backend-selection option is no longer supported.
+The PC backend supports at most 256 basic blocks. Function-free programs may
+produce larger Brainfuck output than with the former structured backend.
 
 ## Symbol Annotations
 

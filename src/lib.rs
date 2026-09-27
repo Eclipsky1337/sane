@@ -21,5 +21,5 @@ pub fn compile_source_inner(src: &str) -> Result<String, diagnostic::Diagnostic>
     let mut parser = parser::Parser::new(tokens);
     let program = parser.parse_program()?;
     let program = sema::resolve(&program)?;
-    Ok(bf::compile(&program)?)
+    Ok(bf::compile_pc(&program)?)
 }

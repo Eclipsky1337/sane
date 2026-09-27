@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+- Removed the structured backend and backend-selection option; all programs
+  now compile through basic-block IR and the PC backend.
 - Added compile-time checked `input` formats with exact literal matching,
   checked byte and signed-int decimal fields, raw-byte fields, and conversion
-  counts in both compiler backends.
+  counts.
 - Added `{:c}` raw-byte and `{:d}` explicit-decimal placeholders to formatted
   `print` output while keeping `{}` as the decimal shorthand.
 - Added signed 32-bit `int` values with four-cell arithmetic, functions,

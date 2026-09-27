@@ -372,9 +372,9 @@ fn scoped_cells_are_reused_after_scope_exit() {
 }
 
 #[test]
-fn structured_backend_rejects_functions() {
-    let err = compile_source("fn f() -> byte { return 1; } put f();").unwrap_err();
-    assert!(err.contains("functions require the pc backend"), "{err}");
+fn library_compiles_functions_with_pc_backend() {
+    let bf = compile_source("fn f() -> byte { return 42; } println f();").unwrap();
+    assert_eq!(run_bf(&bf, &[]), b"42\n");
 }
 
 #[test]
@@ -608,11 +608,13 @@ fn constant_generation_outputs_representative_byte_values() {
 
 #[test]
 fn large_constant_generation_is_compact() {
+    let baseline = compile_source("put 1;").unwrap();
     let bf = compile_source("put 200;").unwrap();
     assert!(
-        bf.len() < 100,
-        "expected compact constant generation, got {} bytes: {bf}",
-        bf.len()
+        bf.len() < baseline.len() + 100,
+        "expected compact constant generation: baseline={}, generated={}",
+        baseline.len(),
+        bf.len(),
     );
 }
 

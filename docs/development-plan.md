@@ -1,7 +1,9 @@
 # Post-1.2 Development Plan
 
-This document is the handoff context for the next Codex session. Work should
-continue on the dedicated `dev` branch. Do not develop directly on `main`.
+This document records the original post-1.2 work plan. Work should continue
+on the dedicated `dev` branch, not directly on `main`. Historical phase plans
+and measurements below describe the former two-backend compiler; the current
+compiler lowers every program through basic-block IR and the PC backend.
 
 ## Progress
 
@@ -43,6 +45,7 @@ continue on the dedicated `dev` branch. Do not develop directly on `main`.
   - [x] constants, functions, typed spills, and arrays
   - [x] exact decimal output
   - [x] tests, examples, and documentation
+- [x] PC-only compilation; removed structured code generation and `-b`
 - [ ] Generated-program-size optimization backlog
   - [x] remove unreachable IR blocks
   - [x] thread jumps and remove trivial blocks
@@ -74,7 +77,7 @@ and Collatz example checks.
   typed output placeholders and the tic-tac-toe example
 - Package version: `1.2.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 170 tests
+- The full test suite currently contains 169 tests
 
 Before starting work:
 
@@ -119,8 +122,7 @@ let result = add(20, 22);
 
 Current important limits:
 
-- automatic backend selection uses PC for programs containing functions
-- forcing `sanec -b structured` rejects functions
+- every program uses the PC backend; `-b` is no longer supported
 - function parameters and value-returning functions are byte-only
 - recursive call graphs are rejected
 - each function uses one statically allocated frame
@@ -139,10 +141,8 @@ source
   -> lexer.rs
   -> parser.rs / AST
   -> sema.rs / resolved program and tape allocation
-  -> structured backend in bf.rs
-       or
-     ir.rs / basic blocks
-       -> PC backend in bf.rs
+  -> ir.rs / basic blocks
+  -> PC backend in bf.rs
   -> Brainfuck
 ```
 
@@ -155,15 +155,14 @@ Important files:
 | `src/parser.rs` | Source grammar |
 | `src/sema.rs` | Name resolution, call graph checks, cells, frames, and spills |
 | `src/ir.rs` | PC-backend basic-block lowering |
-| `src/bf.rs` | Structured codegen, PC dispatcher, calls, and BF microcode |
-| `src/bin/sanec.rs` | Compiler CLI and backend selection |
+| `src/bf.rs` | PC dispatcher, calls, and BF microcode |
+| `src/bin/sanec.rs` | Compiler CLI |
 | `src/interpreter.rs` | Optimized Brainfuck execution |
 | `src/debug.rs` | Raw-instruction debugger and symbol support |
 
 Backend behavior:
 
-- `structured` directly lowers control flow to BF loops and guard cells.
-- `pc` lowers to basic blocks with `Jump`, `Branch`, `Call`, `Return`, or
+- The PC backend lowers to basic blocks with `Jump`, `Branch`, `Call`, `Return`, or
   `Halt` terminators.
 - The PC runtime uses a byte-sized `pc`, `running`, dispatch scratch cells,
   `rv`, call depth, and 16 return-PC cells.

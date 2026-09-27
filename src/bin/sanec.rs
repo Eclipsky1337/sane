@@ -29,7 +29,6 @@ fn run() -> Result<(), String> {
     let mut input = None;
     let mut output = None;
     let mut annotate_symbols = false;
-    let mut backend = Backend::Auto;
 
     while let Some(arg) = args.first().cloned() {
         args.remove(0);
@@ -42,13 +41,6 @@ fn run() -> Result<(), String> {
                 output = Some(path);
             }
             "-s" => annotate_symbols = true,
-            "-b" => {
-                let Some(name) = args.first().cloned() else {
-                    return Err(format!("missing backend after `-b`\n\n{}", usage()));
-                };
-                args.remove(0);
-                backend = Backend::parse(&name)?;
-            }
             _ if arg.starts_with('-') => {
                 return Err(format!("unexpected argument `{arg}`\n\n{}", usage()));
             }
@@ -70,7 +62,7 @@ fn run() -> Result<(), String> {
         (src, "<stdin>".to_string())
     };
 
-    let mut bf = compile_source(&src, &path, backend)?;
+    let mut bf = compile_source(&src, &path)?;
     if annotate_symbols {
         let symbols = resolve_symbols(&src, &path)?;
         bf = format!("{}\n{bf}", format_symbol_annotation(&symbols));
@@ -85,27 +77,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Backend {
-    Auto,
-    Structured,
-    Pc,
-}
-
-impl Backend {
-    fn parse(name: &str) -> Result<Self, String> {
-        match name {
-            "auto" => Ok(Self::Auto),
-            "structured" => Ok(Self::Structured),
-            "pc" => Ok(Self::Pc),
-            _ => Err(format!(
-                "unknown backend `{name}`; expected `auto`, `structured`, or `pc`"
-            )),
-        }
-    }
-}
-
-fn compile_source(src: &str, path: &str, backend: Backend) -> Result<String, String> {
+fn compile_source(src: &str, path: &str) -> Result<String, String> {
     let tokens = sane::lexer::lex(src).map_err(|err| err.render(path, src))?;
     let mut parser = sane::parser::Parser::new(tokens);
     let program = parser
@@ -113,11 +85,7 @@ fn compile_source(src: &str, path: &str, backend: Backend) -> Result<String, Str
         .map_err(|err| err.render(path, src))?;
     let program = sane::sema::resolve(&program).map_err(|err| err.render(path, src))?;
 
-    match backend {
-        Backend::Auto if program.functions.is_empty() => sane::bf::compile(&program),
-        Backend::Auto | Backend::Pc => sane::bf::compile_pc(&program),
-        Backend::Structured => sane::bf::compile(&program),
-    }
+    sane::bf::compile_pc(&program)
 }
 
 fn resolve_symbols(src: &str, path: &str) -> Result<sane::sema::Symbols, String> {
@@ -176,13 +144,12 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
 fn usage() -> String {
     format!(
         "\
-Usage: sanec [source.sn] [-o out.bf] [-s] [-b backend]
+Usage: sanec [source.sn] [-o out.bf] [-s]
 
 Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
-  -b <backend>    Select backend: auto, structured, or pc (default: auto)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 "

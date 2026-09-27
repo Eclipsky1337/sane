@@ -18,7 +18,7 @@ implementation. Function and PC debug-symbol work remains separately deferred.
 ## Types And Literals
 
 The compiler will introduce a scalar type model shared by semantic resolution,
-IR lowering, and both Brainfuck backends.
+IR lowering, and Brainfuck generation.
 
 - Unsuffixed non-negative literals from 0 through 255 infer `byte` when there
   is no wider context.
@@ -67,8 +67,8 @@ Implementation order:
 7. function parameters, returns, and typed spills
 8. four-cell array elements and dynamic indexing
 
-Each stage must preserve existing `byte` behavior in both structured and PC
-backends. Operations not implemented for `int` must produce a semantic
+Each stage must preserve existing `byte` behavior in the PC backend.
+Operations not implemented for `int` must produce a semantic
 diagnostic rather than silently compiling as byte operations.
 
 ## Deferred Decisions

@@ -91,7 +91,7 @@ The first version does not define `%`, bitwise operators, or shifts for
 4. multiplication and division
 5. constants, functions, typed spills, and arrays
 6. exact decimal output
-7. structured and PC regression tests, examples, and documentation
+7. PC regression tests, examples, and documentation
 
 Every stage must preserve existing byte and int outputs and the measured PC
 benchmark baselines.
