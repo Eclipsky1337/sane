@@ -61,6 +61,7 @@ compiler lowers every program through basic-block IR and the PC backend.
   - [ ] evaluate shared runtime microcode
   - [x] optimize PC runtime tape layout
   - [ ] reconsider dispatcher and call-level transformations
+- [x] Baseline 1.3.0 on `dev`
 
 Sane 1.2 passed `cargo fmt -- --check`, `cargo test --locked`,
 `cargo build --locked --release`, `git diff --check`, and the documented AES
@@ -71,11 +72,11 @@ and Collatz example checks.
 - Project: Sane
 - Compiler: `sanec`
 - Interpreter/debugger: `sanei`
-- Current release: `v1.2.0`
-- Current development branch: `dev`
-- `main` and `v1.2.0` contain the completed Phase 1 language work; `dev` adds
-  typed output placeholders and the tic-tac-toe example
-- Package version: `1.2.0`
+- Published release: `v1.2.0` on `main`
+- Current development baseline: `v1.3.0` on `dev`
+- `main` and `v1.2.0` contain the 1.2 release; `v1.3.0` marks the current `dev`
+  baseline, including `int`, `fixed`, formatted input, and PC-only compilation
+- Package version: `1.3.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
 - The full test suite currently contains 169 tests
 

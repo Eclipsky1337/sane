@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
 - Removed the structured backend and backend-selection option; all programs
   now compile through basic-block IR and the PC backend.
