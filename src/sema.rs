@@ -8,7 +8,6 @@ use crate::diagnostic::{Diagnostic, Span};
 
 pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
-pub const WIDE_ARRAY_PREFIX: usize = 16;
 pub const MAX_CALL_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,16 +41,9 @@ pub struct ArrayLayout {
 }
 
 impl ArrayLayout {
-    pub const fn uses_wide_array_primitive(self) -> bool {
-        matches!(self.value_type, ValueType::Int | ValueType::Fixed)
-    }
-
     pub const fn data_offset(self) -> usize {
         match self.value_type {
             ValueType::Byte => 4,
-            ValueType::Int | ValueType::Fixed if self.uses_wide_array_primitive() => {
-                WIDE_ARRAY_PREFIX
-            }
             ValueType::Int | ValueType::Fixed => 0,
         }
     }
@@ -318,7 +310,6 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
 #[derive(Debug, Default)]
 struct Scope {
     names: HashMap<String, Symbol>,
-    owned_cells: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,7 +342,6 @@ struct Resolver {
     call_graph: Vec<Vec<usize>>,
     current_function: Option<usize>,
     current_function_start: Option<usize>,
-    free_cells: Vec<usize>,
     next_cell: usize,
     high_water: usize,
 }
@@ -371,7 +361,6 @@ impl Resolver {
             call_graph: Vec::new(),
             current_function: None,
             current_function_start: None,
-            free_cells: Vec::new(),
             next_cell: TEMP_COUNT,
             high_water: TEMP_COUNT,
         }
@@ -421,7 +410,6 @@ impl Resolver {
                 self.current_scope_mut()
                     .names
                     .insert(param.name.clone(), Symbol::Scalar(layout));
-                self.current_scope_mut().owned_cells.extend(layout.cells());
                 params.push(layout);
             }
             let previous = self.current_function.replace(index);
@@ -589,12 +577,11 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                let layout = self.alloc_scope_value(resolved_type);
+                let layout = self.alloc_fresh_value(resolved_type);
                 let cell = layout.base;
                 self.current_scope_mut()
                     .names
                     .insert(name.clone(), Symbol::Scalar(layout));
-                self.current_scope_mut().owned_cells.extend(layout.cells());
                 self.define_public_scalar(
                     name,
                     layout,
@@ -630,7 +617,7 @@ impl Resolver {
                     value_type,
                 };
                 let storage_len = provisional_layout.storage_len();
-                let base = self.alloc_scope_block(storage_len);
+                let base = self.alloc_fresh_block(storage_len);
                 let layout = ArrayLayout {
                     base,
                     len,
@@ -639,9 +626,6 @@ impl Resolver {
                 self.current_scope_mut()
                     .names
                     .insert(name.clone(), Symbol::Array(layout));
-                self.current_scope_mut()
-                    .owned_cells
-                    .extend(base..base + storage_len);
                 self.define_public_symbol(
                     name,
                     base,
@@ -1599,27 +1583,9 @@ impl Resolver {
         }
     }
 
-    fn alloc_scope_value(&mut self, value_type: ValueType) -> ValueLayout {
-        if self.current_function.is_some() || value_type.cell_width() != 1 {
-            return self.alloc_fresh_value(value_type);
-        }
-        if let Some(base) = self.free_cells.pop() {
-            ValueLayout { base, value_type }
-        } else {
-            self.alloc_fresh_value(value_type)
-        }
-    }
-
     fn alloc_fresh_value(&mut self, value_type: ValueType) -> ValueLayout {
         let base = self.alloc_fresh_block(value_type.cell_width());
         ValueLayout { base, value_type }
-    }
-
-    fn alloc_scope_block(&mut self, len: usize) -> usize {
-        if self.current_function.is_some() {
-            return self.alloc_fresh_block(len);
-        }
-        self.alloc_fresh_block(len)
     }
 
     fn alloc_fresh_block(&mut self, len: usize) -> usize {
@@ -1634,11 +1600,7 @@ impl Resolver {
     }
 
     fn pop_scope(&mut self) {
-        let scope = self.scopes.pop().expect("resolver always has a scope");
-        if self.current_function.is_none() {
-            self.free_cells.extend(scope.owned_cells);
-            self.free_cells.sort_by(|a, b| b.cmp(a));
-        }
+        self.scopes.pop().expect("resolver always has a scope");
     }
 
     fn pop_scope_retain(&mut self) {

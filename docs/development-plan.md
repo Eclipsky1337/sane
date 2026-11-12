@@ -5,6 +5,20 @@ on the dedicated `dev` branch, not directly on `main`. Historical phase plans
 and measurements below describe the former two-backend compiler; the current
 compiler lowers every program through basic-block IR and the PC backend.
 
+## Optimization Baseline Branch
+
+The `baseline-clean` branch is an unoptimized starting point for comparative
+measurements. It keeps the low-level output and constant optimizations:
+repeat compression, the `[-][-]` clear peephole, delta-encoded string output,
+byte constant folding and constant-operand specialization, and the interpreter's
+add/move merging plus `[-]`/`[+]` recognition. The constant materialization
+planner is enabled only with `sanec -c off`.
+
+It intentionally disables IR cleanup, superblocks, shared runtime microcode,
+stride-four wide-array access, runtime-layout trimming, lexical-cell reuse,
+block fusion, array fast paths, and native interpreter operations. The
+debugger and mapped display/key devices are not part of this branch.
+
 ## Progress
 
 - [x] Phase 1: P2 language usability
@@ -71,23 +85,23 @@ and Collatz example checks.
 
 - Project: Sane
 - Compiler: `sanec`
-- Interpreter/debugger: `sanei`
+- Interpreter: `sanei`
 - Published release: `v1.2.0` on `main`
 - Current development baseline: `v1.3.0` on `dev`
 - `main` and `v1.2.0` contain the 1.2 release; `v1.3.0` marks the current `dev`
   baseline, including `int`, `fixed`, formatted input, and PC-only compilation
 - Package version: `1.3.0`
 - Commit messages use prefixes such as `feat:`, `fix:`, and `doc:`
-- The full test suite currently contains 169 tests
+- Validation on this branch uses the documented examples and benchmarks;
+  integration tests are not part of the baseline
 
 Before starting work:
 
 ```sh
-git switch dev
-git fetch origin
-git rebase origin/main
+git switch baseline-clean
 cargo fmt -- --check
-cargo test --locked
+cargo build --locked
+git diff --check
 ```
 
 Do not rewrite or delete published release tags. Keep `dev` rebased on `main`
@@ -158,8 +172,7 @@ Important files:
 | `src/ir.rs` | PC-backend basic-block lowering |
 | `src/bf.rs` | PC dispatcher, calls, and BF microcode |
 | `src/bin/sanec.rs` | Compiler CLI |
-| `src/interpreter.rs` | Optimized Brainfuck execution |
-| `src/debug.rs` | Raw-instruction debugger and symbol support |
+| `src/interpreter.rs` | Brainfuck execution |
 
 Backend behavior:
 
@@ -487,9 +500,10 @@ Apply these changes one at a time and retain measurements after every step.
 The ordering starts with local, behavior-preserving cleanup and postpones
 runtime-layout and calling-convention changes until simpler gains are known.
 
-The current IR optimization is limited to superblock grouping. It does not
-mutate the IR or remove blocks. The final BF optimizer currently only collapses
-adjacent repeated clears such as `[-][-]` into `[-]`.
+In the historical optimized compiler, IR optimization was limited to superblock
+grouping. The `baseline-clean` branch runs none of these optimization passes.
+Its final BF pass collapses adjacent repeated clears such as `[-][-]` into
+`[-]` and optionally compresses repeated commands.
 
 For every item below:
 

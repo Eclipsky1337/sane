@@ -9,15 +9,26 @@ const T0: usize = 0;
 const GENERAL_TEMP_COUNT: usize = 8;
 
 pub fn compile_pc(program: &ResolvedProgram) -> Result<String, String> {
-    compile_pc_inner(program, false)
+    compile_pc_with_repeat_compression(program, true)
+}
+
+pub fn compile_pc_with_repeat_compression(
+    program: &ResolvedProgram,
+    compress_repeats: bool,
+) -> Result<String, String> {
+    compile_pc_inner(program, false, compress_repeats)
 }
 
 #[doc(hidden)]
 pub fn compile_pc_with_profiling(program: &ResolvedProgram) -> Result<String, String> {
-    compile_pc_inner(program, true)
+    compile_pc_inner(program, true, true)
 }
 
-fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result<String, String> {
+fn compile_pc_inner(
+    program: &ResolvedProgram,
+    profile_dispatch: bool,
+    compress_repeats: bool,
+) -> Result<String, String> {
     let ir = crate::ir::lower(program);
     if ir.blocks.len() > u8::MAX as usize + 1 {
         return Err("pc backend supports at most 256 basic blocks".to_string());
@@ -29,27 +40,25 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
             ReturnType::Int | ReturnType::Fixed
         )
     });
-    let has_calls = ir
-        .blocks
-        .iter()
-        .any(|block| matches!(block.terminator, Terminator::Call { .. }));
     let return_width = if wide_return { 4 } else { 1 };
-    let reserved_cells = PcRuntime::reserved_cells(return_width, has_calls);
-    let mut out = BfOut::with_control_depth(program.symbols.scratch_base(), reserved_cells);
-    let rt = PcRuntime::new(out.control_base(), return_width, has_calls);
+    let reserved_cells = PcRuntime::reserved_cells(return_width);
+    let mut out = BfOut::with_control_depth(
+        program.symbols.scratch_base(),
+        reserved_cells,
+        !compress_repeats,
+    );
+    let rt = PcRuntime::new(out.control_base(), return_width);
 
     out.clear(rt.pc);
     out.set_const(rt.pc, block_value(ir.entry)?);
     out.clear(rt.running);
     out.add_const(rt.running, 1);
-    if has_calls {
-        out.clear(rt.call_depth);
-        for cell in rt.rv..rt.rv + return_width {
-            out.clear(cell);
-        }
-        for depth in 0..MAX_CALL_DEPTH {
-            out.clear(rt.ret_base + depth);
-        }
+    out.clear(rt.call_depth);
+    for cell in rt.rv..rt.rv + return_width {
+        out.clear(cell);
+    }
+    for depth in 0..MAX_CALL_DEPTH {
+        out.clear(rt.ret_base + depth);
     }
 
     out.goto(rt.running);
@@ -60,28 +69,20 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
     out.clear(rt.dispatch_pc);
     out.copy_add(rt.pc, rt.dispatch_pc, T0);
 
-    for superblock in ir.superblocks() {
-        let head = superblock.blocks[0];
+    for (index, block) in ir.blocks.iter().enumerate() {
         out.clear(rt.matched);
         out.copy_add(rt.dispatch_pc, rt.matched, T0);
         out.clear(rt.expected);
-        out.set_const(rt.expected, block_value(head)?);
+        out.set_const(rt.expected, block_value(BlockId(index))?);
         out.eq(rt.matched, rt.expected);
 
         out.goto(rt.matched);
         out.code.push('[');
         out.clear(rt.matched);
-        for (position, block_id) in superblock.blocks.iter().copied().enumerate() {
-            let block = &ir.blocks[block_id.0];
-            for op in &block.ops {
-                emit_op(op, &mut out, rt)?;
-            }
-            if let Some(next) = superblock.blocks.get(position + 1) {
-                debug_assert_eq!(block.terminator, Terminator::Jump(*next));
-            } else {
-                emit_terminator(&block.terminator, &ir, program, &mut out, rt)?;
-            }
+        for op in &block.ops {
+            emit_op(op, &mut out, rt)?;
         }
+        emit_terminator(&block.terminator, &ir, program, &mut out, rt)?;
         out.goto(rt.matched);
         out.code.push(']');
     }
@@ -89,7 +90,7 @@ fn compile_pc_inner(program: &ResolvedProgram, profile_dispatch: bool) -> Result
     out.goto(rt.running);
     out.code.push(']');
 
-    Ok(optimize_bf(&out.code))
+    Ok(optimize_bf(&out.code, compress_repeats))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,89 +106,29 @@ struct PcRuntime {
 }
 
 impl PcRuntime {
-    fn reserved_cells(return_width: usize, has_calls: bool) -> usize {
-        if has_calls {
-            6 + return_width + MAX_CALL_DEPTH
-        } else {
-            5
-        }
+    fn reserved_cells(return_width: usize) -> usize {
+        6 + return_width + MAX_CALL_DEPTH
     }
 
-    fn new(control_base: usize, return_width: usize, has_calls: bool) -> Self {
+    fn new(control_base: usize, return_width: usize) -> Self {
         let matched = control_base;
         let expected = control_base + 1;
         let dispatch_pc = control_base + 2;
         let pc = control_base + 3;
-
-        if has_calls {
-            let call_depth = control_base + 4;
-            let rv = control_base + 5;
-            let running = rv + return_width;
-            let ret_base = running + 1;
-            Self {
-                pc,
-                running,
-                dispatch_pc,
-                matched,
-                expected,
-                rv,
-                call_depth,
-                ret_base,
-            }
-        } else {
-            Self {
-                pc,
-                running: control_base + 4,
-                dispatch_pc,
-                matched,
-                expected,
-                rv: control_base,
-                call_depth: control_base,
-                ret_base: control_base,
-            }
+        let running = control_base + 4;
+        let rv = control_base + 5;
+        let call_depth = rv + return_width;
+        let ret_base = call_depth + 1;
+        Self {
+            pc,
+            running,
+            dispatch_pc,
+            matched,
+            expected,
+            rv,
+            call_depth,
+            ret_base,
         }
-    }
-}
-
-#[cfg(test)]
-mod pc_runtime_layout_tests {
-    use super::*;
-
-    #[test]
-    fn layout_omits_call_cells_when_no_calls_are_reachable() {
-        let rt = PcRuntime::new(100, 1, false);
-
-        assert_eq!(PcRuntime::reserved_cells(1, false), 5);
-        assert_eq!(
-            [rt.matched, rt.expected, rt.dispatch_pc, rt.pc, rt.running],
-            [100, 101, 102, 103, 104]
-        );
-    }
-
-    #[test]
-    fn layout_keeps_call_cells_disjoint_for_byte_and_wide_returns() {
-        let byte = PcRuntime::new(100, 1, true);
-        assert_eq!(PcRuntime::reserved_cells(1, true), 23);
-        assert_eq!(
-            [
-                byte.matched,
-                byte.expected,
-                byte.dispatch_pc,
-                byte.pc,
-                byte.call_depth,
-                byte.rv,
-                byte.running,
-                byte.ret_base,
-            ],
-            [100, 101, 102, 103, 104, 105, 106, 107]
-        );
-
-        let wide = PcRuntime::new(100, 4, true);
-        assert_eq!(PcRuntime::reserved_cells(4, true), 26);
-        assert_eq!(wide.call_depth, 104);
-        assert_eq!(wide.rv, 105);
-        assert_eq!(wide.running, 109);
-        assert_eq!(wide.ret_base, 110);
     }
 }
 
@@ -1028,10 +969,6 @@ fn emit_store_input_value(
             copy_input_value(source, dst, out);
         }
         PreparedInputTarget::ArrayDynamic { layout, index } => {
-            if layout.uses_wide_array_primitive() {
-                emit_wide_array_set_prepared(layout, index, source, out);
-                return Ok(());
-            }
             let flag = out.alloc_control_cell();
             let expected = out.alloc_control_cell();
             for element_index in 0..layout.len {
@@ -1241,56 +1178,6 @@ fn emit_int_array_get_dynamic(
     dst: ValueLayout,
     out: &mut BfOut,
 ) -> Result<(), String> {
-    if !layout.uses_wide_array_primitive() {
-        return emit_int_array_get_dynamic_linear(layout, index, dst, out);
-    }
-    let index_cell = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    fanout_wide_array_index(index_cell, layout.base, out);
-    for lane in 0..4 {
-        out.tritonio_array_get_strided(layout.base + lane, 4);
-    }
-    for cell in dst.cells() {
-        out.clear(cell);
-    }
-    for offset in 0..4 {
-        out.move_add(layout.base + 12 + offset, dst.base + offset);
-    }
-    out.free_control_cells(1);
-    Ok(())
-}
-
-fn emit_int_array_set_dynamic(
-    layout: ArrayLayout,
-    index: &Expr,
-    expr: &Expr,
-    out: &mut BfOut,
-) -> Result<(), String> {
-    if !layout.uses_wide_array_primitive() {
-        return emit_int_array_set_dynamic_linear(layout, index, expr, out);
-    }
-    let value_base = out.alloc_control_cell();
-    for _ in 1..4 {
-        out.alloc_control_cell();
-    }
-    let index_cell = out.alloc_control_cell();
-    let value = ValueLayout {
-        base: value_base,
-        value_type: layout.value_type,
-    };
-    emit_value_to(expr, value, out)?;
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    emit_wide_array_set_prepared(layout, index_cell, value, out);
-    out.free_control_cells(5);
-    Ok(())
-}
-
-fn emit_int_array_get_dynamic_linear(
-    layout: ArrayLayout,
-    index: &Expr,
-    dst: ValueLayout,
-    out: &mut BfOut,
-) -> Result<(), String> {
     let index_cell = out.alloc_control_cell();
     let flag = out.alloc_control_cell();
     let expected = out.alloc_control_cell();
@@ -1315,7 +1202,7 @@ fn emit_int_array_get_dynamic_linear(
     Ok(())
 }
 
-fn emit_int_array_set_dynamic_linear(
+fn emit_int_array_set_dynamic(
     layout: ArrayLayout,
     index: &Expr,
     expr: &Expr,
@@ -1349,42 +1236,6 @@ fn emit_int_array_set_dynamic_linear(
     }
     out.free_control_cells(7);
     Ok(())
-}
-
-fn fanout_wide_array_index(index: usize, base: usize, out: &mut BfOut) {
-    for cell in base + 4..base + 12 {
-        out.clear(cell);
-    }
-    out.goto(index);
-    out.code.push('[');
-    out.code.push('-');
-    for cell in base + 4..base + 12 {
-        out.goto(cell);
-        out.code.push('+');
-    }
-    out.goto(index);
-    out.code.push(']');
-}
-
-fn emit_wide_array_set_prepared(
-    layout: ArrayLayout,
-    index: usize,
-    value: ValueLayout,
-    out: &mut BfOut,
-) {
-    debug_assert!(matches!(
-        layout.value_type,
-        ValueType::Int | ValueType::Fixed
-    ));
-    debug_assert_eq!(value.cell_width(), 4);
-    fanout_wide_array_index(index, layout.base, out);
-    for offset in 0..4 {
-        out.clear(layout.base + 12 + offset);
-        out.move_add(value.base + offset, layout.base + 12 + offset);
-    }
-    for lane in 0..4 {
-        out.tritonio_array_set_strided(layout.base + lane, 4);
-    }
 }
 
 fn emit_const_binary_to(
@@ -2393,12 +2244,39 @@ fn alloc_temp(reserved: &[usize]) -> Result<usize, String> {
         .ok_or_else(|| "internal error: out of temporary cells".to_string())
 }
 
-fn optimize_bf(code: &str) -> String {
+fn optimize_bf(code: &str, compress_repeats: bool) -> String {
     let mut optimized = code.to_string();
     while optimized.contains("[-][-]") {
         optimized = optimized.replace("[-][-]", "[-]");
     }
-    optimized
+    if compress_repeats {
+        compress_repeated_commands(&optimized)
+    } else {
+        optimized
+    }
+}
+
+fn compress_repeated_commands(code: &str) -> String {
+    let mut compressed = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if matches!(ch, '+' | '-' | '<' | '>') {
+            let mut count = 1usize;
+            while chars.peek() == Some(&ch) {
+                chars.next();
+                count += 1;
+            }
+            if count >= 3 {
+                compressed.push_str(&count.to_string());
+                compressed.push(ch);
+            } else {
+                compressed.extend(std::iter::repeat(ch).take(count));
+            }
+        } else {
+            compressed.push(ch);
+        }
+    }
+    compressed
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2518,15 +2396,17 @@ struct BfOut {
     ptr: usize,
     scratch_base: usize,
     control_depth: usize,
+    const_plan: bool,
 }
 
 impl BfOut {
-    fn with_control_depth(scratch_base: usize, control_depth: usize) -> Self {
+    fn with_control_depth(scratch_base: usize, control_depth: usize, const_plan: bool) -> Self {
         Self {
             code: String::new(),
             ptr: 0,
             scratch_base,
             control_depth,
+            const_plan,
         }
     }
 
@@ -2586,7 +2466,9 @@ impl BfOut {
         }
         let tmp = self.const_tmp(cell);
         let distance = cell.abs_diff(tmp);
-        if let Some(plan) = ConstPlan::best(value, distance) {
+        if self.const_plan
+            && let Some(plan) = ConstPlan::best(value, distance)
+        {
             self.clear(tmp);
             self.build_const(cell, tmp, plan);
         } else if value <= 128 {
@@ -3299,44 +3181,12 @@ impl BfOut {
     }
 
     fn tritonio_array_set(&mut self, base: usize) {
-        self.tritonio_array_set_strided(base, 1);
+        self.goto(base);
+        self.code.push_str(crate::interpreter::ARRAY_SET_BF);
     }
 
     fn tritonio_array_get(&mut self, base: usize) {
-        self.tritonio_array_get_strided(base, 1);
-    }
-
-    fn tritonio_array_set_strided(&mut self, base: usize, stride: usize) {
         self.goto(base);
-        match stride {
-            1 => self.code.push_str(crate::interpreter::ARRAY_SET_MARKER),
-            4 => self
-                .code
-                .push_str(crate::interpreter::ARRAY_SET_WIDE_MARKER),
-            _ => {}
-        }
-        self.push_strided_bf(crate::interpreter::ARRAY_SET_BF, stride);
-    }
-
-    fn tritonio_array_get_strided(&mut self, base: usize, stride: usize) {
-        self.goto(base);
-        match stride {
-            1 => self.code.push_str(crate::interpreter::ARRAY_GET_MARKER),
-            4 => self
-                .code
-                .push_str(crate::interpreter::ARRAY_GET_WIDE_MARKER),
-            _ => {}
-        }
-        self.push_strided_bf(crate::interpreter::ARRAY_GET_BF, stride);
-    }
-
-    fn push_strided_bf(&mut self, code: &str, stride: usize) {
-        for instruction in code.bytes() {
-            match instruction {
-                b'>' => self.code.push_str(&">".repeat(stride)),
-                b'<' => self.code.push_str(&"<".repeat(stride)),
-                _ => self.code.push(instruction as char),
-            }
-        }
+        self.code.push_str(crate::interpreter::ARRAY_GET_BF);
     }
 }

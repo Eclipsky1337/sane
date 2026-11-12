@@ -1,7 +1,7 @@
 # Architecture
 
-Sane is split into a compiler library, two command-line binaries, and an
-optimized Brainfuck runtime.
+Sane is split into a compiler library, two command-line binaries, and a
+Brainfuck runtime.
 
 ## Pipeline
 
@@ -24,7 +24,7 @@ flowchart LR
     subgraph runtime["sanei interpreter"]
         direction TB
         input["Brainfuck input<br/><code>.bf</code>"]
-        parse["interpreter.rs<br/>parse + optimize"]
+        parse["interpreter.rs<br/>parse"]
         execute["30,000-cell runtime"]
         result["program output"]
 
@@ -44,7 +44,9 @@ flowchart LR
    by jumps, branches, calls, returns, or halt.
 5. The PC code generator in `bf.rs` emits a dispatcher loop around those
    blocks.
-6. The final Brainfuck pass removes redundant adjacent clear loops.
+6. The final Brainfuck pass removes redundant adjacent clear loops. Unless
+   `sanec -c off` is selected, it then writes runs of three or more `+`, `-`,
+   `<`, or `>` with a decimal repeat count understood by `sanei`.
 
 Diagnostics retain source spans through parsing and semantic analysis so errors
 can point back to the original line and column.
@@ -62,10 +64,10 @@ cell control_base+0        block matched flag
 cell control_base+1        expected block id
 cell control_base+2        dispatch pc copy
 cell control_base+3        current block pc
-cell control_base+4        running flag if no calls; otherwise call depth
-cell control_base+5..      return value (one or four cells, if calls are reachable)
-next cell                  running flag (if calls are reachable)
-following 16 cells         return-pc stack (if calls are reachable)
+cell control_base+4        running flag
+cell control_base+5..      return value (one or four cells)
+following cell             call depth
+following 16 cells         return-pc stack
 remaining cells            control-flow and arithmetic scratch cells
 ```
 
@@ -77,9 +79,8 @@ microcode may overwrite them.
 ### Source Storage
 
 Byte scalars occupy one cell. Int and Q16.16 fixed scalars occupy four
-consecutive little-endian cells. Lexical-scope cells return to a free-list
-after the scope ends, allowing later non-overlapping variables to reuse
-storage.
+consecutive little-endian cells. Every declaration allocates fresh storage; the
+baseline does not reuse cells from earlier lexical scopes.
 
 Function parameters and locals occupy static frame cells. Expression calls use
 spill cells when a later call would overwrite an earlier result in `rv`.
@@ -96,8 +97,8 @@ base + 4..   array elements
 
 Constant array accesses compile directly to a known data cell. Dynamic byte
 accesses use the metadata cells and array traversal microcode. Int and fixed
-arrays use four cells per element and a 16-cell prefix for strided dynamic
-accesses.
+arrays use four cells per element and select a dynamic element by comparing the
+index against each element in turn.
 
 ### Scratch And Control Cells
 
@@ -119,10 +120,8 @@ block compares its id with the current `pc`; the matching block performs its
 operations and writes the next block id. A halt terminator clears `running` and
 ends the dispatcher.
 
-Before code generation, unconditional jump chains are grouped when every
-target has one predecessor and is not the program entry or a function entry.
-The dispatcher compares only the resulting group heads, and a match executes
-the complete group before returning to dispatch.
+The dispatcher compares the current `pc` against every block in turn. It does
+not form superblocks or skip empty blocks.
 
 A call copies arguments into the callee's static frame, pushes the continuation
 block id onto the 16-cell return-pc stack, and switches `pc` to the function's
@@ -132,24 +131,11 @@ static frames cannot represent simultaneous activations of the same function.
 
 ## Interpreter Runtime
 
-The normal interpreter parses Brainfuck into higher-level operations before
-execution. The debugger intentionally uses raw instructions so breakpoints and
-single stepping correspond directly to Brainfuck program counters.
+The interpreter parses Brainfuck into a small set of operations before
+execution. Adjacent add/subtract commands and adjacent pointer moves are merged,
+and a loop whose body is `[-]` or `[+]` becomes a direct clear. All other loops
+run as ordinary Brainfuck loops. There is no block fusion, array fast path, or
+native-operation shortcut.
 
-The interpreter also fuses contiguous pointer moves and cell updates into
-blocks after recognizing clear and linear-transfer loops. Blocks validate the
-pointer range before applying their updates; input, output, loops, and profiling
-markers remain separate operations.
-
-For dynamic array reads and writes, the PC generator marks its unchanged
-Brainfuck traversal microcode with BF-safe text. The interpreter recognizes the
-exact byte-array template or the stride-four template used by each lane of
-`int` and `fixed` arrays. When the metadata cells have the expected state and
-the entire traversal fits on the tape, it accesses the selected element
-directly. Otherwise it runs the original Brainfuck instructions. Other
-interpreters ignore the markers, and arithmetic still uses its ordinary
-Brainfuck lowering. A future MMIO region with per-write side effects must
-bypass this shortcut when the array traversal touches it.
-
-Symbol comments produced by `sanec -s` are ignored during execution but parsed
-by the debugger for tape inspection.
+Dynamic array accesses execute the generated Brainfuck traversal microcode.
+Symbol comments produced by `sanec -s` are ignored during execution.

@@ -91,9 +91,13 @@ fn measure(name: &'static str, source: &str, input: &[u8], expected_output: &[u8
 
     Measurement {
         name,
-        dispatch_groups: lowered.superblocks().len(),
+        dispatch_groups: lowered.blocks.len(),
         ir: lowered.stats(),
-        bf_instructions: generated.bytes().filter(|byte| is_bf(*byte)).count(),
+        bf_instructions: sane::interpreter::expand_repeated_commands(&generated)
+            .unwrap()
+            .bytes()
+            .filter(|byte| is_bf(*byte))
+            .count(),
         parsed_ops: parsed.operation_count(),
         dispatches,
         executed_ops,

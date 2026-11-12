@@ -5,12 +5,13 @@
 ## Usage
 
 ```text
-Usage: sanec [source.sn] [-o out.bf] [-s]
+Usage: sanec [source.sn] [-o out.bf] [-s] [-c on|off]
 
 Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
+  -c <on|off>     Compress repeated + - < > commands (default: on)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 ```
@@ -62,8 +63,15 @@ sanec examples/Collatz.sn -o collatz.bf
 ```
 
 The former `-b` backend-selection option is no longer supported.
-The PC backend supports at most 256 basic blocks. Function-free programs may
-produce larger Brainfuck output than with the former structured backend.
+The PC backend supports at most 256 basic blocks. This baseline keeps every
+basic block produced by lowering and executes each block in its own dispatcher
+match.
+
+Runs of three or more `+`, `-`, `<`, or `>` commands are written with a decimal
+repeat count by default: `>>>` becomes `3>`, while `>>` and `++` stay unchanged.
+`.`, `,`, `[`, and `]` are never counted. `sanec -c off` leaves those runs
+uncompressed. `sanei` accepts either form. Ordinary Brainfuck interpreters
+ignore the digits, so they execute a compressed run as one command.
 
 ## Symbol Annotations
 
@@ -82,15 +90,15 @@ Example shape:
 ```text
 SANE SYMBOLS
 TEMP CELLS 0 TO 7
-SCRATCH BASE 12
-CONTROL BASE 24
+SCRATCH BASE 16
+CONTROL BASE 28
 x CELL 8
 data ARRAY BASE 9 LEN 3 DATA CELLS 13 TO 15
 END SANE SYMBOLS
 ```
 
-These symbols can be inspected by the `sanei` debugger. See
-[Interpreter And Debugger](interpreter.md).
+The annotations are ignored by Brainfuck interpreters and can be consumed by
+external tools.
 
 ## Diagnostics
 

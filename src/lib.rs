@@ -1,6 +1,5 @@
 pub mod ast;
 pub mod bf;
-pub mod debug;
 pub mod diagnostic;
 pub mod interpreter;
 pub mod ir;

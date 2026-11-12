@@ -1,5 +1,17 @@
 # Changelog
 
+## Optimization baseline (branch `baseline-clean`)
+
+- Removed the interactive debugger and the `sanei -d` option.
+- Removed IR cleanup passes, superblocks, shared runtime microcode, stride-four
+  wide-array access, runtime-layout trimming, and lexical-cell reuse.
+- Removed interpreter block fusion, array fast paths, and native operations;
+  add/move merging and `[-]`/`[+]` recognition remain.
+- Added `sanec -c on|off` repeat compression; the constant materialization
+  planner runs only with `-c off`.
+- Removed the integration test suite and the mapped display/key support from
+  the development line.
+
 ## 1.3.0
 
 - Removed the structured backend and backend-selection option; all programs

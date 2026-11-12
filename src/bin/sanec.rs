@@ -29,6 +29,7 @@ fn run() -> Result<(), String> {
     let mut input = None;
     let mut output = None;
     let mut annotate_symbols = false;
+    let mut compress_repeats = true;
 
     while let Some(arg) = args.first().cloned() {
         args.remove(0);
@@ -41,6 +42,22 @@ fn run() -> Result<(), String> {
                 output = Some(path);
             }
             "-s" => annotate_symbols = true,
+            "-c" => {
+                let Some(value) = args.first().cloned() else {
+                    return Err(format!("missing on/off after `-c`\n\n{}", usage()));
+                };
+                args.remove(0);
+                compress_repeats = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(format!(
+                            "invalid `-c` value `{value}`; expected `on` or `off`\n\n{}",
+                            usage()
+                        ));
+                    }
+                };
+            }
             _ if arg.starts_with('-') => {
                 return Err(format!("unexpected argument `{arg}`\n\n{}", usage()));
             }
@@ -62,7 +79,7 @@ fn run() -> Result<(), String> {
         (src, "<stdin>".to_string())
     };
 
-    let mut bf = compile_source(&src, &path)?;
+    let mut bf = compile_source(&src, &path, compress_repeats)?;
     if annotate_symbols {
         let symbols = resolve_symbols(&src, &path)?;
         bf = format!("{}\n{bf}", format_symbol_annotation(&symbols));
@@ -77,7 +94,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn compile_source(src: &str, path: &str) -> Result<String, String> {
+fn compile_source(src: &str, path: &str, compress_repeats: bool) -> Result<String, String> {
     let tokens = sane::lexer::lex(src).map_err(|err| err.render(path, src))?;
     let mut parser = sane::parser::Parser::new(tokens);
     let program = parser
@@ -85,7 +102,7 @@ fn compile_source(src: &str, path: &str) -> Result<String, String> {
         .map_err(|err| err.render(path, src))?;
     let program = sane::sema::resolve(&program).map_err(|err| err.render(path, src))?;
 
-    sane::bf::compile_pc(&program)
+    sane::bf::compile_pc_with_repeat_compression(&program, compress_repeats)
 }
 
 fn resolve_symbols(src: &str, path: &str) -> Result<sane::sema::Symbols, String> {
@@ -144,12 +161,13 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
 fn usage() -> String {
     format!(
         "\
-Usage: sanec [source.sn] [-o out.bf] [-s]
+Usage: sanec [source.sn] [-o out.bf] [-s] [-c on|off]
 
 Options:
   source.sn       Read Sane source from file, or stdin if omitted
   -o <file>       Write Brainfuck output to <file>
   -s              Add BF-safe symbol table comments
+  -c <on|off>     Compress repeated + - < > commands (default: on)
   -h, --help      Show this help text
   -V, --version   Show compiler version
 "

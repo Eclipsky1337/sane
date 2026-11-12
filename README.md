@@ -3,12 +3,18 @@
 Sane is a small programming language that compiles to 8-bit Brainfuck.
 
 - `sanec` compiles Sane source (`.sn`) to Brainfuck (`.bf`).
-- `sanei` runs and debugs Brainfuck programs.
+- `sanei` runs Brainfuck programs.
 
 Sane supports byte, signed 32-bit integer, and signed Q16.16 fixed-point values.
 All programs use basic-block IR and the PC backend, including programs without
 functions. The language also supports typed compile-time constants, inferred
 arrays, and compile-time checked formatted input and output.
+
+This branch is the unoptimized baseline used for optimization comparisons. It
+keeps repeat compression, the `[-][-]` peephole, byte constant folding and
+specialization, delta-encoded string output, and interpreter add/move merging
+plus `[-]`/`[+]` recognition. `sanec -c off` additionally enables the constant
+materialization planner.
 
 ## Quick Start
 
@@ -37,7 +43,7 @@ printf "7\n" | sanei collatz.bf
 
 - [Language Reference](docs/language.md): syntax, types, functions, arrays, I/O, and control flow.
 - [Compiler](docs/compiler.md): `sanec` usage, PC backend, diagnostics, and symbol annotations.
-- [Interpreter And Debugger](docs/interpreter.md): `sanei` usage, optimizations, and debugger commands.
+- [Interpreter](docs/interpreter.md): `sanei` usage and command parsing.
 - [Architecture](docs/architecture.md): compilation pipeline, IR, tape layout, and implementation notes.
 - [32-Bit Integer Design](docs/int-design.md): `int` semantics, layout, conversions, and implementation stages.
 - [Q16.16 Fixed-Point Design](docs/fixed-design.md): `fixed` representation, conversions, arithmetic, and output.
@@ -55,11 +61,10 @@ The examples are complete programs rather than syntax test cases:
 
 ## Development
 
-Build the binaries and run the full test suite:
+Build the binaries:
 
 ```sh
-cargo build
-cargo test
+cargo build --locked
 ```
 
 Run a development binary without installing it:
