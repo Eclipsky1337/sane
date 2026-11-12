@@ -58,6 +58,14 @@ The examples are complete programs rather than syntax test cases:
 | `examples/toy_aes_round.sn` | Runs an AES-inspired encrypt/decrypt round trip. |
 | `examples/Collatz.sn` | Prints a Collatz sequence using a byte function. |
 | `examples/formatted_input.sn` | Parses two signed integers with a compile-time input format. |
+| `examples/feature_tour.sn` | Exercises the scalar types, arrays, functions, I/O formats, control flow, and operators. |
+
+Run the feature tour with:
+
+```sh
+sanec examples/feature_tour.sn -o feature_tour.bf
+printf "tour 7 42 X\nZQ{1} 99\n" | sanei feature_tour.bf
+```
 
 ## Development
 

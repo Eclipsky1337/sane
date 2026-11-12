@@ -1,0 +1,245 @@
+// A compact tour of Sane's current language features.
+//
+// Build and run:
+//   sanec examples/feature_tour.sn -o feature_tour.bf
+//   printf "tour 7 42 X\nZQ{1} 99\n" | sanei feature_tour.bf
+//
+// The program covers byte/int/fixed values, constants, inferred and explicit
+// arrays, byte/int/fixed/void functions, formatted input and output, raw reads,
+// all control-flow forms, casts, wrapping, division by zero, and compound
+// operators.
+
+const LIMIT = 4;
+const TITLE_LEN = 12;
+const NEWLINE = '\n';
+const MASK = (1 << 4) - 1;
+const ZERO = 0;
+const HALF = 0.5;
+const BIG = 0xffff0000;
+
+fn byte_mix(a: byte, b: byte) -> byte {
+    return (a ^ b) + 1;
+}
+
+fn int_sum(a: int, b: int) -> int {
+    return a + b;
+}
+
+fn fixed_mid(a: fixed, b: fixed) -> fixed {
+    return (a + b) / 2.0;
+}
+
+fn show(label: byte, value: int) {
+    print "{:c}: {}\n", label, value;
+}
+
+fn noop() {
+    return;
+}
+
+print "feature tour\n";
+
+// Formatted input: literal text, byte {}, signed int {:d}, and raw byte {:c}.
+let a: byte;
+let b: int;
+let mark: byte;
+let matched: byte = input("tour {} {:d} {:c}\n", a, b, mark);
+let raw: byte;
+read raw;
+let letters: byte[3] = ['a', 'b', 'c'];
+let li: byte = 1;
+read letters[li];
+
+print "input: a={} b={} mark={:c} raw={:c} letter={:c} matched={}\n",
+      a, b, mark, raw, letters[li], matched;
+
+// Constants, lexical scopes, and shadowing.
+let letter = 'A';
+{
+    let letter = 'B';
+    const LOCAL = 3;
+    print "scope: inner={:c} local={}", letter, LOCAL;
+}
+print " outer={:c}\n", letter;
+
+// Inferred scalars and arrays, plus explicit arrays and const lengths.
+let inferred_byte = 255;
+let inferred_int = 65536;
+let inferred_fixed = 2.5;
+let weights: byte[LIMIT] = [1, 2, 3, 4];
+let zeros: byte[LIMIT];
+let smalls = [3, 1, 4];
+let totals = [1, 65536, -2];
+let ratios = [1.5, -0.5, 3];
+let points: fixed[2] = [0.25, 0.75];
+let slots: int[2];
+let title = "feature tour";
+let greeting: byte[6] = "hello\n";
+
+// Byte wrapping and compound assignments.
+let wrap: byte = 250;
+wrap += 10;
+print "byte wrap: {} mask={} big={}\n", wrap, MASK, BIG;
+
+// Int arithmetic, bitwise operators, shifts, and casts.
+let wide: int = 300;
+let low = wide as byte;
+let shifted = (wide << 3) >> 1;
+let flags = (1 << 5) | 3;
+flags &= ~(1 << 0);
+flags ^= 0b111;
+flags |= 0x80;
+let negative: int = -b;
+let rem = b % 5;
+let from_byte: int = a as int;
+print "int: low={} shifted={} flags={} neg={} rem={} from_byte={}\n",
+      low, shifted, flags, negative, rem, from_byte;
+
+// Fixed-point arithmetic, comparisons, conversions, and arrays.
+let as_fixed: fixed = wide as fixed;
+let half = fixed_mid(as_fixed, 0.0);
+let whole: int = (as_fixed + 0.75) as int;
+let small: byte = (0.5 + 0.25) as byte;
+let from_int: fixed = b as fixed;
+let ri: byte = 1;
+ratios[ri] *= 2.0;
+let fixed_ok = points[0] < points[1] && points[0] != 0.25;
+print "fixed: mid={} whole={} small={} from_int={} array={} points={} ok={}\n",
+      half, whole, small, from_int, ratios[ri], points[0] + points[1], fixed_ok;
+
+// Arrays with dynamic indexes and compound assignment.
+let wi: byte = 2;
+weights[wi] += a;
+let ti: byte = 1;
+totals[ti] += 1;
+print "arrays: byte={} int={} zeros={} smalls={} inferred=({}, {}, {})\n",
+      weights[wi], totals[ti], zeros[0], smalls[1], inferred_byte, inferred_int,
+      inferred_fixed;
+
+// All control-flow forms.
+if matched == 3 {
+    puts "input ok\n";
+} else if matched == 2 {
+    puts "input partial\n";
+} else {
+    puts "input failed\n";
+}
+
+let wi2: byte = 0;
+let sum: int = 0;
+while wi2 < LIMIT {
+    wi2 += 1;
+    if wi2 == 2 {
+        continue;
+    }
+    if wi2 == 4 {
+        break;
+    }
+    sum += wi2;
+}
+print "while: i={} sum={}\n", wi2, sum;
+
+let n: byte = 0;
+loop {
+    n += 1;
+    if n == 3 {
+        break;
+    }
+}
+print "loop: n={}\n", n;
+
+let fsum: byte = 0;
+for let j = 0; j < LIMIT; j += 1 {
+    if j == 1 {
+        continue;
+    }
+    fsum += weights[j];
+}
+print "for: fsum={}\n", fsum;
+
+let once: byte = 0;
+for ;; {
+    once += 1;
+    break;
+}
+print "for empty: once={}\n", once;
+
+// Compound assignments for each width.
+let acc: byte = 5;
+acc += 3;
+acc -= 1;
+acc *= 3;
+acc /= 2;
+acc %= 7;
+acc &= 0b011;
+acc |= 0b1000;
+acc ^= 0b0011;
+acc <<= 1;
+acc >>= 1;
+print "compound byte: {}\n", acc;
+
+let iacc: int = 10;
+iacc += 5;
+iacc -= 3;
+iacc *= 2;
+iacc /= 4;
+iacc %= 5;
+iacc &= 0xff;
+iacc |= 0x100;
+iacc ^= 0x7f;
+iacc <<= 2;
+iacc >>= 1;
+print "compound int: {}\n", iacc;
+
+let facc: fixed = 2.0;
+facc += 0.5;
+facc -= 0.25;
+facc *= 2.0;
+facc /= 4.0;
+print "compound fixed: {}\n", facc;
+
+// Logical, comparison, and unary operators.
+let ok = a < 10 && b >= 40 || false;
+let not_ok = !ok;
+let inverted = ~0x0f;
+let bit = (0b1010 & 0b1100) | (0x0f ^ 0x03);
+let sh = (1 << 2) + (16 >> 2);
+let cmp = a != b && wide <= 300 && b > a;
+print "ops: ok={} not={} cmp={} inv={} bit={} sh={}\n",
+      ok, not_ok, cmp, inverted, bit, sh;
+
+// Formatted input into a dynamic array element.
+let slot_index: byte = 0;
+let got: byte = input("{{{}}} {}\n", slot_index, slots[slot_index]);
+print "input array: got={} index={} value={}\n", got, slot_index, slots[slot_index];
+
+// Output forms: puts, put, print, println, escaped braces, and title bytes.
+puts "title: ";
+for let t = 0; t < TITLE_LEN; t += 1 {
+    put title[t];
+}
+put NEWLINE;
+puts "greeting: ";
+for let g = 0; g < 6; g += 1 {
+    put greeting[g];
+}
+println inferred_byte;
+println inferred_int;
+println inferred_fixed;
+print "braces: {{{}}}\n", b;
+print "decimal: {:d}\n", b;
+print "raw output: {:c}{:c}{:c}\n", mark, raw, letters[li];
+
+// Defined edge behavior.
+print "edges: div={} mod={} fixed_div={}\n", b / ZERO, b % ZERO, 1.0 / 0.0;
+let failed: byte;
+let stopped = input("never {}", failed);
+print "input stop: {}\n", stopped;
+
+// Function forms: nested expression calls, void calls, call statements, and
+// discarded value-returning calls.
+show('S', int_sum(int_sum(1, 2), 3));
+byte_mix('A', 'B');
+int_sum(1, 2);
+noop();
+print "func: mix={} half={}\n", byte_mix(a, b as byte), HALF;
