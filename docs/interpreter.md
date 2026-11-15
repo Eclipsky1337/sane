@@ -40,15 +40,29 @@ interactive prompts are visible before the program requests input.
 `>`. `3>` is three `>` commands, and `10+` is ten `+` commands. A count of zero
 repeats nothing. Other non-Brainfuck characters are ignored.
 
-Adjacent add/subtract commands are merged into one operation, and adjacent
-pointer moves are merged the same way. A loop whose body is exactly `[-]` or
-`[+]` clears the current cell without executing the loop body.
+The parser first builds a small nested form so it can inspect loop bodies, then
+flattens it into one instruction stream. The runtime executes that stream with a
+program counter; loops use absolute `JumpIfZero` / `JumpIfNonZero` targets
+instead of recursive body calls.
 
-| Brainfuck pattern | Parsed operation |
+| Brainfuck pattern | Bytecode operation |
 | --- | --- |
 | `+++--` or `3+2-` | Combined add/subtract |
-| `>>>>><` or `5>2<` | Combined pointer movement |
-| `[-]` or `[+]` | Clear current cell |
+| `+++>+++<` | `Block` of fused adds and pointer moves |
+| `[-]`, `[+]`, `[[-]]` | `Set(0)` |
+| `[-]+++` | `Set(3)` |
+| `[->++<]`, `[->+>+<<]` | `AddMul` |
+| `[>]`, `[<]`, `[>>]` | `ScanZero` |
+| Other `[ body ]` | `JumpIfZero` + body + `JumpIfNonZero` |
 
-All other loops run as ordinary Brainfuck loops. There is no block fusion,
-array fast path, or native operation shortcut.
+`Block` checks the minimum and maximum pointer positions once, then applies all
+cell edits. `AddMul` applies `value * coefficient` to the target cells and
+clears the origin; it checks the body's intermediate pointer positions even
+though they are not replayed. `ScanZero` moves until it finds a zero cell, and
+reports an error if the tape boundary is crossed first.
+
+`Block`, `AddMul`, and `ScanZero` preserve Brainfuck's pointer-bounds errors,
+including intermediate moves that leave and re-enter the tape. Normal execution
+does not collect instruction counters; the benchmark path enables them with a
+separate statistics entry point. Array fast paths and native operations are not
+part of this interpreter yet.

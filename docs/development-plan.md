@@ -10,14 +10,15 @@ compiler lowers every program through basic-block IR and the PC backend.
 The `baseline-clean` branch is an unoptimized starting point for comparative
 measurements. It keeps the low-level output and constant optimizations:
 repeat compression, the `[-][-]` clear peephole, delta-encoded string output,
-byte constant folding and constant-operand specialization, and the interpreter's
-add/move merging plus `[-]`/`[+]` recognition. The constant materialization
-planner is enabled only with `sanec -c off`.
+byte constant folding and constant-operand specialization. The interpreter now
+uses a flat bytecode stream with fused add/move blocks, transfer-loop `AddMul`,
+move-only `ScanZero`, direct `Set`, and compile-time statistics gating. The
+constant materialization planner is enabled only with `sanec -c off`.
 
 It intentionally disables IR cleanup, superblocks, shared runtime microcode,
 stride-four wide-array access, runtime-layout trimming, lexical-cell reuse,
-block fusion, array fast paths, and native interpreter operations. The
-debugger and mapped display/key devices are not part of this branch.
+array fast paths, and native interpreter operations. The debugger and mapped
+display/key devices are not part of this branch.
 
 ## Progress
 

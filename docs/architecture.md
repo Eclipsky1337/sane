@@ -131,11 +131,16 @@ static frames cannot represent simultaneous activations of the same function.
 
 ## Interpreter Runtime
 
-The interpreter parses Brainfuck into a small set of operations before
-execution. Adjacent add/subtract commands and adjacent pointer moves are merged,
-and a loop whose body is `[-]` or `[+]` becomes a direct clear. All other loops
-run as ordinary Brainfuck loops. There is no block fusion, array fast path, or
-native-operation shortcut.
+The interpreter first builds a nested parse tree, analyzes each loop body, and
+then flattens the result into one bytecode stream with absolute jumps. Adjacent
+adds and pointer moves become `Block` instructions. Transfer loops such as
+`[->++<]` become `AddMul`; move-only loops such as `[>]` become `ScanZero`;
+clear loops become `Set(0)`. Remaining loops use `JumpIfZero` and
+`JumpIfNonZero`. `Block` and `AddMul` check the minimum and maximum pointer
+positions once, including intermediate positions, so pointer-bounds errors are
+preserved.
 
-Dynamic array accesses execute the generated Brainfuck traversal microcode.
-Symbol comments produced by `sanec -s` are ignored during execution.
+Normal execution does not collect statistics; `run_with_stats` uses a
+compile-time flag so benchmark-only counters do not cost the normal path.
+Dynamic array accesses still execute the generated Brainfuck traversal
+microcode. Symbol comments produced by `sanec -s` are ignored during execution.

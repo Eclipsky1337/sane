@@ -5,8 +5,10 @@
 - Removed the interactive debugger and the `sanei -d` option.
 - Removed IR cleanup passes, superblocks, shared runtime microcode, stride-four
   wide-array access, runtime-layout trimming, and lexical-cell reuse.
-- Removed interpreter block fusion, array fast paths, and native operations;
-  add/move merging and `[-]`/`[+]` recognition remain.
+- Replaced the nested interpreter operation tree with one flat bytecode stream
+  using absolute jumps. Added fused add/move `Block`, transfer-loop `AddMul`,
+  move-only `ScanZero`, direct `Set`, and compile-time statistics gating.
+- Array fast paths and native operations remain out of scope.
 - Added `sanec -c on|off` repeat compression; the constant materialization
   planner runs only with `-c off`.
 - Removed the integration test suite and the mapped display/key support from

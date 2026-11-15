@@ -29,9 +29,9 @@ struct Measurement {
     ir: ir::IrStats,
     dispatch_groups: usize,
     bf_instructions: usize,
-    parsed_ops: usize,
+    bytecode: usize,
     dispatches: u64,
-    executed_ops: u64,
+    executed_instrs: u64,
 }
 
 fn main() {
@@ -46,7 +46,7 @@ fn main() {
     ];
 
     println!(
-        "| Program | Blocks | Dispatch groups | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Parsed ops | Dispatches | Executed ops |"
+        "| Program | Blocks | Dispatch groups | Reachable | IR ops | Empty | Trivial jumps | BF instructions | Bytecode | Dispatches | Executed instrs |"
     );
     println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for measurement in measurements {
@@ -60,9 +60,9 @@ fn main() {
             measurement.ir.empty_blocks,
             measurement.ir.trivial_jumps,
             measurement.bf_instructions,
-            measurement.parsed_ops,
+            measurement.bytecode,
             measurement.dispatches,
-            measurement.executed_ops,
+            measurement.executed_instrs,
         );
     }
 }
@@ -73,7 +73,10 @@ fn measure(name: &'static str, source: &str, input: &[u8], expected_output: &[u8
     let generated = bf::compile_pc(&resolved).unwrap();
     let parsed = BfProgram::parse(&generated).unwrap();
     let mut output = Vec::new();
-    let ExecutionStats { executed_ops, .. } = parsed
+    let ExecutionStats {
+        executed_ops: executed_instrs,
+        ..
+    } = parsed
         .run_with_stats(input, &mut output)
         .unwrap_or_else(|error| panic!("failed to run {name}: {error}"));
     assert_eq!(output, expected_output, "unexpected output from {name}");
@@ -98,9 +101,9 @@ fn measure(name: &'static str, source: &str, input: &[u8], expected_output: &[u8
             .bytes()
             .filter(|byte| is_bf(*byte))
             .count(),
-        parsed_ops: parsed.operation_count(),
+        bytecode: parsed.operation_count(),
         dispatches,
-        executed_ops,
+        executed_instrs,
     }
 }
 
