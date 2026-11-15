@@ -538,6 +538,21 @@ fn emit_expr_to(
                         out.copy_add(layout.base, dst, tmp);
                     }
                 }
+                _ if expr.value_type() == ValueType::Int => {
+                    let base = out.alloc_control_cell();
+                    for _ in 1..4 {
+                        out.alloc_control_cell();
+                    }
+                    let int_layout = ValueLayout {
+                        base,
+                        value_type: ValueType::Int,
+                    };
+                    emit_int_to(expr, int_layout, out)?;
+                    let tmp = alloc_temp(reserved)?;
+                    out.clear(dst);
+                    out.copy_add(int_layout.base, dst, tmp);
+                    out.free_control_cells(4);
+                }
                 _ if expr.value_type() == ValueType::Fixed => {
                     let base = out.alloc_control_cell();
                     for _ in 1..4 {
