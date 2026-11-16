@@ -97,8 +97,11 @@ base + 4..   array elements
 
 Constant array accesses compile directly to a known data cell. Dynamic byte
 accesses use the metadata cells and array traversal microcode. Int and fixed
-arrays use four cells per element and select a dynamic element by comparing the
-index against each element in turn.
+arrays reserve the same four metadata cells, followed by four-cell elements.
+For arrays of at most 64 elements, a dynamic access runs the byte traversal
+across the four lanes using the byte index `4*i + lane`. Larger arrays fall
+back to linear selection because a byte index cannot represent `4*i + lane`
+beyond 255.
 
 ### Scratch And Control Cells
 

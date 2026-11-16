@@ -1187,7 +1187,7 @@ fn array_elem(layout: ArrayLayout, index: usize) -> Result<ValueLayout, String> 
     }
 }
 
-fn emit_int_array_get_dynamic(
+fn emit_int_array_get_dynamic_linear(
     layout: ArrayLayout,
     index: &Expr,
     dst: ValueLayout,
@@ -1217,7 +1217,7 @@ fn emit_int_array_get_dynamic(
     Ok(())
 }
 
-fn emit_int_array_set_dynamic(
+fn emit_int_array_set_dynamic_linear(
     layout: ArrayLayout,
     index: &Expr,
     expr: &Expr,
@@ -1250,6 +1250,108 @@ fn emit_int_array_set_dynamic(
         out.code.push(']');
     }
     out.free_control_cells(7);
+    Ok(())
+}
+
+fn emit_int_array_get_dynamic(
+    layout: ArrayLayout,
+    index: &Expr,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    if layout.len > 64 {
+        return emit_int_array_get_dynamic_linear(layout, index, dst, out);
+    }
+    let index_cell = out.alloc_control_cell();
+    let idx = out.alloc_control_cell();
+    emit_expr_to(index, index_cell, out, &[index_cell, idx])?;
+    for cell in dst.cells() {
+        out.clear(cell);
+    }
+    let mut reserved = vec![
+        index_cell,
+        idx,
+        layout.base,
+        layout.base + 1,
+        layout.base + 2,
+        layout.base + 3,
+    ];
+    reserved.extend(dst.cells());
+    for lane in 0..4 {
+        let index_layout = ValueLayout::byte(index_cell);
+        let scaled = Expr::Binary {
+            left: Box::new(Expr::Var(index_layout)),
+            op: BinOp::Mul,
+            right: Box::new(Expr::Byte(4)),
+        };
+        out.clear(idx);
+        emit_expr_to(&scaled, idx, out, &reserved)?;
+        out.add_const(idx, lane as u8);
+        out.clear(layout.base + 1);
+        out.copy_add(idx, layout.base + 1, T0);
+        out.clear(layout.base + 2);
+        out.copy_add(layout.base + 1, layout.base + 2, T0);
+        out.tritonio_array_get(layout.base);
+        out.clear(dst.base + lane);
+        out.move_add(layout.base + 3, dst.base + lane);
+    }
+    out.free_control_cells(2);
+    Ok(())
+}
+
+fn emit_int_array_set_dynamic(
+    layout: ArrayLayout,
+    index: &Expr,
+    expr: &Expr,
+    out: &mut BfOut,
+) -> Result<(), String> {
+    if layout.len > 64 {
+        return emit_int_array_set_dynamic_linear(layout, index, expr, out);
+    }
+    let value_base = out.alloc_control_cell();
+    for _ in 1..4 {
+        out.alloc_control_cell();
+    }
+    let value = ValueLayout {
+        base: value_base,
+        value_type: layout.value_type,
+    };
+    emit_value_to(expr, value, out)?;
+
+    let index_cell = out.alloc_control_cell();
+    let idx = out.alloc_control_cell();
+    emit_expr_to(index, index_cell, out, &[index_cell, idx])?;
+    let reserved = vec![
+        value_base,
+        value_base + 1,
+        value_base + 2,
+        value_base + 3,
+        index_cell,
+        idx,
+        layout.base,
+        layout.base + 1,
+        layout.base + 2,
+        layout.base + 3,
+    ];
+    for lane in 0..4 {
+        let index_layout = ValueLayout::byte(index_cell);
+        let scaled = Expr::Binary {
+            left: Box::new(Expr::Var(index_layout)),
+            op: BinOp::Mul,
+            right: Box::new(Expr::Byte(4)),
+        };
+        out.clear(idx);
+        emit_expr_to(&scaled, idx, out, &reserved)?;
+        out.add_const(idx, lane as u8);
+        out.clear(layout.base + 1);
+        out.copy_add(idx, layout.base + 1, T0);
+        out.clear(layout.base + 2);
+        out.copy_add(layout.base + 1, layout.base + 2, T0);
+        out.clear(layout.base + 3);
+        out.copy_add(value.base + lane, layout.base + 3, T0);
+        out.tritonio_array_set(layout.base);
+    }
+    out.free_control_cells(6);
     Ok(())
 }
 
