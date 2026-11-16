@@ -1966,7 +1966,7 @@ fn emit_fixed_mul(
         out.copy_add(right_value.base + offset + 2, right_high.base + offset, T0);
     }
 
-    emit_int_mul(&Expr::Var(left_high), &Expr::Var(right_value), dst, out)?;
+    emit_int_mul(&Expr::Var(right_value), &Expr::Var(left_high), dst, out)?;
     emit_int_mul(&Expr::Var(left_low), &Expr::Var(right_high), term, out)?;
     emit_int_add_sub(&Expr::Var(dst), &Expr::Var(term), BinOp::Add, dst, out)?;
     emit_int_mul(&Expr::Var(left_low), &Expr::Var(right_low), term, out)?;
