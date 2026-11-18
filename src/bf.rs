@@ -661,7 +661,10 @@ fn emit_expr_to(
 enum PreparedInputTarget {
     Scalar(ValueLayout),
     ArrayConst(ValueLayout),
-    ArrayDynamic { layout: ArrayLayout, index: usize },
+    ArrayDynamic {
+        layout: ArrayLayout,
+        parts: IndexParts,
+    },
 }
 
 fn emit_input(
@@ -954,6 +957,11 @@ fn prepare_input_target(
                     *layout,
                     usize::from(index),
                 )?))
+            } else if index.value_type() == ValueType::Int || layout.page_count() > 1 {
+                Ok(PreparedInputTarget::ArrayDynamic {
+                    layout: *layout,
+                    parts: emit_index_parts(index, out, &[])?,
+                })
             } else {
                 let index_cell = out.alloc_control_cell();
                 emit_when(active, out, |out| {
@@ -961,7 +969,11 @@ fn prepare_input_target(
                 })?;
                 Ok(PreparedInputTarget::ArrayDynamic {
                     layout: *layout,
-                    index: index_cell,
+                    parts: IndexParts {
+                        page: None,
+                        offset: index_cell,
+                        cells: 1,
+                    },
                 })
             }
         }
@@ -969,8 +981,8 @@ fn prepare_input_target(
 }
 
 fn free_prepared_input_target(target: PreparedInputTarget, out: &mut BfOut) {
-    if matches!(target, PreparedInputTarget::ArrayDynamic { .. }) {
-        out.free_control_cells(1);
+    if let PreparedInputTarget::ArrayDynamic { parts, .. } = target {
+        out.free_control_cells(parts.cells);
     }
 }
 
@@ -983,23 +995,30 @@ fn emit_store_input_value(
         PreparedInputTarget::Scalar(dst) | PreparedInputTarget::ArrayConst(dst) => {
             copy_input_value(source, dst, out);
         }
-        PreparedInputTarget::ArrayDynamic { layout, index } => {
-            let flag = out.alloc_control_cell();
-            let expected = out.alloc_control_cell();
-            for element_index in 0..layout.len {
-                out.clear(flag);
-                out.copy_add(index, flag, T0);
-                out.clear(expected);
-                out.set_const(expected, element_index as u8);
-                out.eq(flag, expected);
-                out.goto(flag);
-                out.code.push('[');
-                out.clear(flag);
-                copy_input_value(source, layout.element(element_index), out);
-                out.goto(flag);
-                out.code.push(']');
+        PreparedInputTarget::ArrayDynamic { layout, parts } => {
+            let pages = layout.page_count();
+            let mut store = |page: usize, out: &mut BfOut| -> Result<(), String> {
+                let page_layout = layout.page_layout(page);
+                match layout.value_type {
+                    ValueType::Byte => {
+                        set_byte_index(page_layout, parts.offset, out);
+                        out.move_add(source.base, page_layout.base + 3);
+                        out.tritonio_array_set(page_layout.base);
+                    }
+                    ValueType::Int => {
+                        emit_int_array_set_at(page_layout, parts.offset, source, out);
+                    }
+                    ValueType::Fixed => {
+                        unreachable!("fixed input rejected during semantic analysis")
+                    }
+                }
+                Ok(())
+            };
+            if let Some(page_cell) = parts.page {
+                emit_page_selector(page_cell, pages, out, &mut store)?;
+            } else {
+                store(0, out)?;
             }
-            out.free_control_cells(2);
         }
     }
     Ok(())
@@ -1053,14 +1072,15 @@ where
 fn emit_cell_eq_const(cell: usize, value: u8, dst: usize, out: &mut BfOut) {
     let left = out.alloc_control_cell();
     let right = out.alloc_control_cell();
+    let tmp = out.alloc_control_cell();
     out.clear(left);
-    out.copy_add(cell, left, T0);
+    out.copy_add(cell, left, tmp);
     out.clear(right);
     out.set_const(right, value);
     out.eq(left, right);
     out.clear(dst);
     out.move_add(left, dst);
-    out.free_control_cells(2);
+    out.free_control_cells(3);
 }
 
 fn emit_cell_is_digit(cell: usize, dst: usize, out: &mut BfOut) {
@@ -1078,12 +1098,13 @@ fn emit_cell_is_digit(cell: usize, dst: usize, out: &mut BfOut) {
 fn emit_cell_less_const(cell: usize, value: u8, dst: usize, out: &mut BfOut) {
     let left = out.alloc_control_cell();
     let right = out.alloc_control_cell();
+    let tmp = out.alloc_control_cell();
     out.clear(left);
-    out.copy_add(cell, left, T0);
+    out.copy_add(cell, left, tmp);
     out.clear(right);
     out.set_const(right, value);
     out.less_cells(left, right, dst);
-    out.free_control_cells(2);
+    out.free_control_cells(3);
 }
 
 fn emit_cells_less_preserve(left: usize, right: usize, dst: usize, out: &mut BfOut) {
@@ -1097,6 +1118,145 @@ fn emit_cells_less_preserve(left: usize, right: usize, dst: usize, out: &mut BfO
     out.free_control_cells(2);
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IndexParts {
+    page: Option<usize>,
+    offset: usize,
+    cells: usize,
+}
+
+fn emit_index_parts(
+    index: &Expr,
+    out: &mut BfOut,
+    reserved: &[usize],
+) -> Result<IndexParts, String> {
+    match index.value_type() {
+        ValueType::Byte => {
+            let offset = out.alloc_control_cell();
+            let mut reserved_cells = reserved.to_vec();
+            reserved_cells.push(offset);
+            emit_expr_to(index, offset, out, &reserved_cells)?;
+            Ok(IndexParts {
+                page: None,
+                offset,
+                cells: 1,
+            })
+        }
+        ValueType::Int => {
+            let base = out.alloc_control_cell();
+            for _ in 1..4 {
+                out.alloc_control_cell();
+            }
+            emit_int_to(
+                index,
+                ValueLayout {
+                    base,
+                    value_type: ValueType::Int,
+                },
+                out,
+            )?;
+            Ok(IndexParts {
+                page: Some(base + 1),
+                offset: base,
+                cells: 4,
+            })
+        }
+        _ => Err("internal error: array index must be byte or int".to_string()),
+    }
+}
+
+fn free_index_parts(parts: IndexParts, out: &mut BfOut) {
+    out.free_control_cells(parts.cells);
+}
+
+const SEQUENTIAL_PAGE_LIMIT: usize = 8;
+
+fn emit_page_selector<F>(
+    page_cell: usize,
+    pages: usize,
+    out: &mut BfOut,
+    mut body: F,
+) -> Result<(), String>
+where
+    F: FnMut(usize, &mut BfOut) -> Result<(), String>,
+{
+    if pages <= 1 {
+        return body(0, out);
+    }
+    if pages <= SEQUENTIAL_PAGE_LIMIT {
+        for page in 0..pages {
+            let flag = out.alloc_control_cell();
+            emit_cell_eq_const(page_cell, page as u8, flag, out);
+            out.goto(flag);
+            out.code.push('[');
+            out.clear(flag);
+            body(page, out)?;
+            out.goto(flag);
+            out.code.push(']');
+            out.free_control_cells(1);
+        }
+        return Ok(());
+    }
+    emit_page_tree(page_cell, 0, pages, out, &mut body)
+}
+
+fn emit_page_tree<F>(
+    page_cell: usize,
+    lo: usize,
+    hi: usize,
+    out: &mut BfOut,
+    body: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(usize, &mut BfOut) -> Result<(), String>,
+{
+    if hi - lo == 1 {
+        return body(lo, out);
+    }
+    let mid = (lo + hi) / 2;
+    let cond = out.alloc_control_cell();
+    emit_cell_less_const(page_cell, mid as u8, cond, out);
+    let else_flag = out.alloc_control_cell();
+    out.clear(else_flag);
+    out.add_const(else_flag, 1);
+
+    out.goto(cond);
+    out.code.push('[');
+    out.clear(cond);
+    out.clear(else_flag);
+    emit_page_tree(page_cell, lo, mid, out, body)?;
+    out.goto(cond);
+    out.code.push(']');
+
+    out.goto(else_flag);
+    out.code.push('[');
+    out.clear(else_flag);
+    emit_page_tree(page_cell, mid, hi, out, body)?;
+    out.goto(else_flag);
+    out.code.push(']');
+
+    out.free_control_cells(2);
+    Ok(())
+}
+
+fn set_byte_index(layout: ArrayLayout, offset: usize, out: &mut BfOut) {
+    out.clear(layout.base);
+    out.clear(layout.base + 1);
+    out.copy_add(offset, layout.base + 1, T0);
+    out.clear(layout.base + 2);
+    out.copy_add(offset, layout.base + 2, T0);
+    out.clear(layout.base + 3);
+}
+
+fn emit_byte_array_get_at(layout: ArrayLayout, offset: usize, dst: usize, out: &mut BfOut) {
+    set_byte_index(layout, offset, out);
+    out.tritonio_array_get(layout.base);
+    if dst != layout.base + 3 {
+        out.clear(dst);
+        out.move_add(layout.base + 3, dst);
+    }
+}
+
 fn emit_array_get_byte(
     layout: ArrayLayout,
     index: &Expr,
@@ -1105,7 +1265,6 @@ fn emit_array_get_byte(
     reserved: &[usize],
 ) -> Result<(), String> {
     debug_assert_eq!(layout.value_type, ValueType::Byte);
-    let base = layout.base;
     if let Some(index) = const_eval(index) {
         let cell = array_elem(layout, usize::from(index))?.base;
         if cell != dst {
@@ -1116,12 +1275,17 @@ fn emit_array_get_byte(
         return Ok(());
     }
 
-    emit_array_index(index, base + 1, out, reserved)?;
-    out.tritonio_array_get(base);
-    if dst != base + 3 {
-        out.clear(dst);
-        out.move_add(base + 3, dst);
+    let parts = emit_index_parts(index, out, reserved)?;
+    let pages = layout.page_count();
+    if let Some(page_cell) = parts.page {
+        emit_page_selector(page_cell, pages, out, |page, out| {
+            emit_byte_array_get_at(layout.page_layout(page), parts.offset, dst, out);
+            Ok(())
+        })?;
+    } else {
+        emit_byte_array_get_at(layout.page_layout(0), parts.offset, dst, out);
     }
+    free_index_parts(parts, out);
     Ok(())
 }
 
@@ -1140,12 +1304,24 @@ fn emit_array_set(
         return emit_int_array_set_dynamic(layout, index, expr, out);
     }
 
-    let base = layout.base;
-    emit_expr_to(expr, T0, out, &[T0, base, base + 1, base + 2, base + 3])?;
-    out.clear(base + 3);
-    out.move_add(T0, base + 3);
-    emit_array_index(index, base + 1, out, &[base, base + 1, base + 2, base + 3])?;
-    out.tritonio_array_set(base);
+    let value = out.alloc_control_cell();
+    emit_expr_to(expr, value, out, &[value, T0])?;
+    let parts = emit_index_parts(index, out, &[value])?;
+    let pages = layout.page_count();
+    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+        let page_layout = layout.page_layout(page);
+        set_byte_index(page_layout, parts.offset, out);
+        out.copy_add(value, page_layout.base + 3, T0);
+        out.tritonio_array_set(page_layout.base);
+        Ok(())
+    };
+    if let Some(page_cell) = parts.page {
+        emit_page_selector(page_cell, pages, out, &mut apply)?;
+    } else {
+        apply(0, out)?;
+    }
+    free_index_parts(parts, out);
+    out.free_control_cells(1);
     Ok(())
 }
 
@@ -1157,22 +1333,21 @@ fn emit_array_read(layout: ArrayLayout, index: &Expr, out: &mut BfOut) -> Result
         return Ok(());
     }
 
-    let base = layout.base;
-    emit_array_index(index, base + 1, out, &[base, base + 1, base + 2, base + 3])?;
-    out.read(base + 3);
-    out.tritonio_array_set(base);
-    Ok(())
-}
-
-fn emit_array_index(
-    index: &Expr,
-    index_cell: usize,
-    out: &mut BfOut,
-    reserved: &[usize],
-) -> Result<(), String> {
-    emit_expr_to(index, index_cell, out, reserved)?;
-    out.clear(index_cell + 1);
-    out.copy_add(index_cell, index_cell + 1, index_cell - 1);
+    let parts = emit_index_parts(index, out, &[])?;
+    let pages = layout.page_count();
+    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+        let page_layout = layout.page_layout(page);
+        set_byte_index(page_layout, parts.offset, out);
+        out.read(page_layout.base + 3);
+        out.tritonio_array_set(page_layout.base);
+        Ok(())
+    };
+    if let Some(page_cell) = parts.page {
+        emit_page_selector(page_cell, pages, out, &mut apply)?;
+    } else {
+        apply(0, out)?;
+    }
+    free_index_parts(parts, out);
     Ok(())
 }
 
@@ -1205,25 +1380,47 @@ fn set_wide_index(layout: ArrayLayout, index_cell: usize, out: &mut BfOut) {
     out.copy_add(index_cell, layout.base + 8, T0);
 }
 
+fn emit_int_array_get_at(layout: ArrayLayout, offset: usize, dst: ValueLayout, out: &mut BfOut) {
+    for cell in dst.cells() {
+        out.clear(cell);
+    }
+    clear_wide_metadata(layout, out);
+    set_wide_index(layout, offset, out);
+    push_microcode(out, layout.base, crate::interpreter::WIDE_GET_BF);
+    for lane in 0..4 {
+        out.move_add(layout.base + 12 + lane, dst.base + lane);
+    }
+}
+
 fn emit_int_array_get_dynamic(
     layout: ArrayLayout,
     index: &Expr,
     dst: ValueLayout,
     out: &mut BfOut,
 ) -> Result<(), String> {
-    let index_cell = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    for cell in dst.cells() {
-        out.clear(cell);
+    let parts = emit_index_parts(index, out, &[])?;
+    let pages = layout.page_count();
+    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+        emit_int_array_get_at(layout.page_layout(page), parts.offset, dst, out);
+        Ok(())
+    };
+    if let Some(page_cell) = parts.page {
+        emit_page_selector(page_cell, pages, out, &mut apply)?;
+    } else {
+        apply(0, out)?;
     }
-    clear_wide_metadata(layout, out);
-    set_wide_index(layout, index_cell, out);
-    push_microcode(out, layout.base, crate::interpreter::WIDE_GET_BF);
-    for lane in 0..4 {
-        out.move_add(layout.base + 12 + lane, dst.base + lane);
-    }
-    out.free_control_cells(1);
+    free_index_parts(parts, out);
     Ok(())
+}
+
+fn emit_int_array_set_at(layout: ArrayLayout, offset: usize, value: ValueLayout, out: &mut BfOut) {
+    clear_wide_metadata(layout, out);
+    set_wide_index(layout, offset, out);
+    for lane in 0..4 {
+        out.clear(layout.base + 12 + lane);
+        out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
+    }
+    push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);
 }
 
 fn emit_int_array_set_dynamic(
@@ -1242,16 +1439,19 @@ fn emit_int_array_set_dynamic(
     };
     emit_value_to(expr, value, out)?;
 
-    let index_cell = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    clear_wide_metadata(layout, out);
-    set_wide_index(layout, index_cell, out);
-    for lane in 0..4 {
-        out.clear(layout.base + 12 + lane);
-        out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
+    let parts = emit_index_parts(index, out, &[])?;
+    let pages = layout.page_count();
+    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+        emit_int_array_set_at(layout.page_layout(page), parts.offset, value, out);
+        Ok(())
+    };
+    if let Some(page_cell) = parts.page {
+        emit_page_selector(page_cell, pages, out, &mut apply)?;
+    } else {
+        apply(0, out)?;
     }
-    push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);
-    out.free_control_cells(5);
+    free_index_parts(parts, out);
+    out.free_control_cells(4);
     Ok(())
 }
 

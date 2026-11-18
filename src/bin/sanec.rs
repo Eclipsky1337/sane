@@ -141,14 +141,19 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                 }
                 .element(0)
                 .base;
-                let width = value_type.cell_width();
+                let layout = sane::sema::ArrayLayout {
+                    base: *base,
+                    len: *len,
+                    value_type: *value_type,
+                };
+                let pages = layout.page_count();
                 let last = if *len == 0 {
                     first - 1
                 } else {
-                    first + len * width - 1
+                    *base + layout.storage_len() - 1
                 };
                 lines.push(format!(
-                    "{name} ARRAY BASE {base} LEN {len} DATA CELLS {first} TO {last}"
+                    "{name} ARRAY BASE {base} LEN {len} PAGES {pages} DATA CELLS {first} TO {last}"
                 ));
             }
         }

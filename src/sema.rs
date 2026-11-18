@@ -9,6 +9,7 @@ use crate::diagnostic::{Diagnostic, Span};
 pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
 pub const MAX_CALL_DEPTH: usize = 16;
+pub const MAX_STORAGE_CELLS: usize = 29_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValueLayout {
@@ -41,6 +42,8 @@ pub struct ArrayLayout {
 }
 
 impl ArrayLayout {
+    pub const PAGE_SIZE: usize = 256;
+
     pub const fn data_offset(self) -> usize {
         match self.value_type {
             ValueType::Byte => 4,
@@ -48,13 +51,57 @@ impl ArrayLayout {
         }
     }
 
+    pub const fn full_page_stride(self) -> usize {
+        self.data_offset() + Self::PAGE_SIZE * self.value_type.cell_width()
+    }
+
+    pub const fn page_count(self) -> usize {
+        if self.len == 0 {
+            0
+        } else {
+            (self.len + Self::PAGE_SIZE - 1) / Self::PAGE_SIZE
+        }
+    }
+
+    pub const fn page_start(self, page: usize) -> usize {
+        self.base + page * self.full_page_stride()
+    }
+
+    pub const fn page_len(self, page: usize) -> usize {
+        let remaining = self.len - page * Self::PAGE_SIZE;
+        if remaining > Self::PAGE_SIZE {
+            Self::PAGE_SIZE
+        } else {
+            remaining
+        }
+    }
+
+    pub const fn page_layout(self, page: usize) -> Self {
+        Self {
+            base: self.page_start(page),
+            len: self.page_len(page),
+            value_type: self.value_type,
+        }
+    }
+
     pub const fn storage_len(self) -> usize {
-        self.data_offset() + self.len * self.value_type.cell_width()
+        let pages = self.page_count();
+        if pages == 0 {
+            return 0;
+        }
+        let last = pages - 1;
+        last * self.full_page_stride()
+            + self.data_offset()
+            + self.page_len(last) * self.value_type.cell_width()
     }
 
     pub const fn element(self, index: usize) -> ValueLayout {
+        let page = index / Self::PAGE_SIZE;
+        let offset = index % Self::PAGE_SIZE;
         ValueLayout {
-            base: self.base + self.data_offset() + index * self.value_type.cell_width(),
+            base: self.page_start(page)
+                + self.data_offset()
+                + offset * self.value_type.cell_width(),
             value_type: self.value_type,
         }
     }
@@ -294,6 +341,12 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Diagnostic> {
         .into_iter()
         .map(|value_type| resolver.alloc_fresh_value(value_type))
         .collect::<Vec<_>>();
+    if resolver.high_water > MAX_STORAGE_CELLS {
+        return Err(Diagnostic::bare(format!(
+            "program needs {} storage cells, but the 30000-cell tape leaves room for at most {}",
+            resolver.high_water, MAX_STORAGE_CELLS
+        )));
+    }
     Ok(ResolvedProgram {
         functions,
         stmts,
@@ -670,7 +723,7 @@ impl Resolver {
                 let layout = self.lookup_array(name, *name_span)?;
                 self.check_const_index(index, layout.len)?;
                 let index = self.resolve_expr(index)?;
-                self.require_byte(&index, *name_span, "array indexing")?;
+                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
                 let expr = self.resolve_expr(expr)?;
                 if !can_assign(layout.value_type, expr.value_type()) {
                     return Err(Diagnostic::new(
@@ -748,7 +801,7 @@ impl Resolver {
                 }
                 self.check_const_index(index, layout.len)?;
                 let index = self.resolve_expr(index)?;
-                self.require_byte(&index, *name_span, "array indexing")?;
+                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
                 Ok(ResolvedStmt::ReadArray { layout, index })
             }
             Stmt::Call {
@@ -949,7 +1002,7 @@ impl Resolver {
                 let layout = self.lookup_array(name, *name_span)?;
                 self.check_const_index(index, layout.len)?;
                 let index = self.resolve_expr(index)?;
-                self.require_byte(&index, *name_span, "array indexing")?;
+                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
                 Ok(ResolvedExpr::ArrayGet {
                     layout,
                     index: Box::new(index),
@@ -1011,7 +1064,12 @@ impl Resolver {
                             let layout = self.lookup_array(name, *name_span)?;
                             self.check_const_index(index, layout.len)?;
                             let index = self.resolve_expr(index)?;
-                            self.require_byte(&index, *name_span, "array indexing")?;
+                            self.require_array_index(
+                                &index,
+                                layout.len,
+                                *name_span,
+                                "array indexing",
+                            )?;
                             ResolvedInputTarget::Array {
                                 layout,
                                 index: Box::new(index),
@@ -1203,9 +1261,9 @@ impl Resolver {
     fn resolve_array_len(&self, len: &ArrayLen) -> Result<usize, Diagnostic> {
         match len {
             ArrayLen::Inferred(len) => {
-                if *len > usize::from(u8::MAX) {
+                if *len > usize::from(u16::MAX) {
                     Err(Diagnostic::bare(
-                        "inferred array length exceeds the byte limit of 255",
+                        "inferred array length exceeds the limit of 65535",
                     ))
                 } else {
                     Ok(*len)
@@ -1218,9 +1276,9 @@ impl Resolver {
                         "array length must be greater than zero",
                         expr.span(),
                     ))
-                } else if len.value > u32::from(u8::MAX) {
+                } else if len.value > u32::from(u16::MAX) {
                     Err(Diagnostic::new(
-                        "array length exceeds the byte limit of 255",
+                        "array length exceeds the limit of 65535",
                         expr.span(),
                     ))
                 } else {
@@ -1555,6 +1613,28 @@ impl Resolver {
             Symbol::Scalar(layout) => Ok(layout),
             Symbol::Const { .. } => Err(Diagnostic::new(format!("`{name}` is a constant"), span)),
             Symbol::Array(_) => Err(Diagnostic::new(format!("`{name}` is an array"), span)),
+        }
+    }
+
+    fn require_array_index(
+        &self,
+        expr: &ResolvedExpr,
+        len: usize,
+        span: Span,
+        context: &str,
+    ) -> Result<(), Diagnostic> {
+        if matches!(expr.value_type(), ValueType::Byte | ValueType::Int) {
+            Ok(())
+        } else if len > ArrayLayout::PAGE_SIZE {
+            Err(Diagnostic::new(
+                format!("{context} requires a byte or int expression"),
+                span,
+            ))
+        } else {
+            Err(Diagnostic::new(
+                format!("{context} requires a byte expression"),
+                span,
+            ))
         }
     }
 
