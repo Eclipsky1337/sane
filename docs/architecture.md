@@ -85,7 +85,8 @@ baseline does not reuse cells from earlier lexical scopes.
 Function parameters and locals occupy static frame cells. Expression calls use
 spill cells when a later call would overwrite an earlier result in `rv`.
 
-Arrays longer than 256 elements are split into 256-element pages. Every page
+Array lengths are capped at 4096 elements. Arrays longer than 256 elements are
+split into 256-element pages. Every page
 has its own metadata block, and page bases are compile-time constants. The
 last page may be shorter. Byte array pages use four metadata cells:
 

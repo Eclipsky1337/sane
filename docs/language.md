@@ -132,9 +132,10 @@ put data[i];
 ```
 
 Constant indexes are checked at compile time. Dynamic indexes may be byte or
-int and are not bounds checked. Arrays longer than 256 elements are internally
-split into 256-element pages; use an int index to reach pages after the first,
-because a byte index only addresses page 0.
+int and are not bounds checked. Array lengths are capped at 4096 elements.
+Arrays longer than 256 elements are internally split into 256-element pages;
+use an int index to reach pages after the first, because a byte index only
+addresses page 0.
 
 ## Literals
 

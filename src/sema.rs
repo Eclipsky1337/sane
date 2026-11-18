@@ -10,6 +10,7 @@ pub const TEMP_COUNT: usize = 8;
 pub const WORK_CELL_COUNT: usize = 12;
 pub const MAX_CALL_DEPTH: usize = 16;
 pub const MAX_STORAGE_CELLS: usize = 29_000;
+pub const MAX_ARRAY_LEN: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValueLayout {
@@ -1261,10 +1262,10 @@ impl Resolver {
     fn resolve_array_len(&self, len: &ArrayLen) -> Result<usize, Diagnostic> {
         match len {
             ArrayLen::Inferred(len) => {
-                if *len > usize::from(u16::MAX) {
-                    Err(Diagnostic::bare(
-                        "inferred array length exceeds the limit of 65535",
-                    ))
+                if *len > MAX_ARRAY_LEN {
+                    Err(Diagnostic::bare(format!(
+                        "inferred array length exceeds the limit of {MAX_ARRAY_LEN}"
+                    )))
                 } else {
                     Ok(*len)
                 }
@@ -1276,9 +1277,9 @@ impl Resolver {
                         "array length must be greater than zero",
                         expr.span(),
                     ))
-                } else if len.value > u32::from(u16::MAX) {
+                } else if len.value > MAX_ARRAY_LEN as u32 {
                     Err(Diagnostic::new(
-                        "array length exceeds the limit of 65535",
+                        format!("array length exceeds the limit of {MAX_ARRAY_LEN}"),
                         expr.span(),
                     ))
                 } else {
