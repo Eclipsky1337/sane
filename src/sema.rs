@@ -44,7 +44,7 @@ impl ArrayLayout {
     pub const fn data_offset(self) -> usize {
         match self.value_type {
             ValueType::Byte => 4,
-            ValueType::Int | ValueType::Fixed => 4,
+            ValueType::Int | ValueType::Fixed => 16,
         }
     }
 

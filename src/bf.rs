@@ -1187,70 +1187,15 @@ fn array_elem(layout: ArrayLayout, index: usize) -> Result<ValueLayout, String> 
     }
 }
 
-fn emit_int_array_get_dynamic_linear(
-    layout: ArrayLayout,
-    index: &Expr,
-    dst: ValueLayout,
-    out: &mut BfOut,
-) -> Result<(), String> {
-    let index_cell = out.alloc_control_cell();
-    let flag = out.alloc_control_cell();
-    let expected = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    for cell in dst.cells() {
-        out.clear(cell);
+fn push_scaled_microcode(out: &mut BfOut, base: usize, lane: usize, code: &str) {
+    out.goto(base + lane);
+    for c in code.chars() {
+        match c {
+            '>' => out.code.push_str(">>>>"),
+            '<' => out.code.push_str("<<<<"),
+            _ => out.code.push(c),
+        }
     }
-    for element_index in 0..layout.len {
-        out.clear(flag);
-        out.copy_add(index_cell, flag, T0);
-        out.clear(expected);
-        out.set_const(expected, element_index as u8);
-        out.eq(flag, expected);
-        out.goto(flag);
-        out.code.push('[');
-        out.clear(flag);
-        copy_int_layout(layout.element(element_index), dst, out);
-        out.goto(flag);
-        out.code.push(']');
-    }
-    out.free_control_cells(3);
-    Ok(())
-}
-
-fn emit_int_array_set_dynamic_linear(
-    layout: ArrayLayout,
-    index: &Expr,
-    expr: &Expr,
-    out: &mut BfOut,
-) -> Result<(), String> {
-    let value_base = out.alloc_control_cell();
-    for _ in 1..4 {
-        out.alloc_control_cell();
-    }
-    let index_cell = out.alloc_control_cell();
-    let flag = out.alloc_control_cell();
-    let expected = out.alloc_control_cell();
-    let value = ValueLayout {
-        base: value_base,
-        value_type: layout.value_type,
-    };
-    emit_value_to(expr, value, out)?;
-    emit_expr_to(index, index_cell, out, &[index_cell])?;
-    for element_index in 0..layout.len {
-        out.clear(flag);
-        out.copy_add(index_cell, flag, T0);
-        out.clear(expected);
-        out.set_const(expected, element_index as u8);
-        out.eq(flag, expected);
-        out.goto(flag);
-        out.code.push('[');
-        out.clear(flag);
-        copy_int_layout(value, layout.element(element_index), out);
-        out.goto(flag);
-        out.code.push(']');
-    }
-    out.free_control_cells(7);
-    Ok(())
 }
 
 fn emit_int_array_get_dynamic(
@@ -1259,43 +1204,21 @@ fn emit_int_array_get_dynamic(
     dst: ValueLayout,
     out: &mut BfOut,
 ) -> Result<(), String> {
-    if layout.len > 64 {
-        return emit_int_array_get_dynamic_linear(layout, index, dst, out);
-    }
     let index_cell = out.alloc_control_cell();
-    let idx = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell, idx])?;
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
     for cell in dst.cells() {
         out.clear(cell);
     }
-    let mut reserved = vec![
-        index_cell,
-        idx,
-        layout.base,
-        layout.base + 1,
-        layout.base + 2,
-        layout.base + 3,
-    ];
-    reserved.extend(dst.cells());
     for lane in 0..4 {
-        let index_layout = ValueLayout::byte(index_cell);
-        let scaled = Expr::Binary {
-            left: Box::new(Expr::Var(index_layout)),
-            op: BinOp::Mul,
-            right: Box::new(Expr::Byte(4)),
-        };
-        out.clear(idx);
-        emit_expr_to(&scaled, idx, out, &reserved)?;
-        out.add_const(idx, lane as u8);
-        out.clear(layout.base + 1);
-        out.copy_add(idx, layout.base + 1, T0);
-        out.clear(layout.base + 2);
-        out.copy_add(layout.base + 1, layout.base + 2, T0);
-        out.tritonio_array_get(layout.base);
+        out.clear(layout.base + 4 + lane);
+        out.copy_add(index_cell, layout.base + 4 + lane, T0);
+        out.clear(layout.base + 8 + lane);
+        out.copy_add(layout.base + 4 + lane, layout.base + 8 + lane, T0);
+        push_scaled_microcode(out, layout.base, lane, crate::interpreter::ARRAY_GET_BF);
         out.clear(dst.base + lane);
-        out.move_add(layout.base + 3, dst.base + lane);
+        out.move_add(layout.base + 12 + lane, dst.base + lane);
     }
-    out.free_control_cells(2);
+    out.free_control_cells(1);
     Ok(())
 }
 
@@ -1305,9 +1228,6 @@ fn emit_int_array_set_dynamic(
     expr: &Expr,
     out: &mut BfOut,
 ) -> Result<(), String> {
-    if layout.len > 64 {
-        return emit_int_array_set_dynamic_linear(layout, index, expr, out);
-    }
     let value_base = out.alloc_control_cell();
     for _ in 1..4 {
         out.alloc_control_cell();
@@ -1319,39 +1239,17 @@ fn emit_int_array_set_dynamic(
     emit_value_to(expr, value, out)?;
 
     let index_cell = out.alloc_control_cell();
-    let idx = out.alloc_control_cell();
-    emit_expr_to(index, index_cell, out, &[index_cell, idx])?;
-    let reserved = vec![
-        value_base,
-        value_base + 1,
-        value_base + 2,
-        value_base + 3,
-        index_cell,
-        idx,
-        layout.base,
-        layout.base + 1,
-        layout.base + 2,
-        layout.base + 3,
-    ];
+    emit_expr_to(index, index_cell, out, &[index_cell])?;
     for lane in 0..4 {
-        let index_layout = ValueLayout::byte(index_cell);
-        let scaled = Expr::Binary {
-            left: Box::new(Expr::Var(index_layout)),
-            op: BinOp::Mul,
-            right: Box::new(Expr::Byte(4)),
-        };
-        out.clear(idx);
-        emit_expr_to(&scaled, idx, out, &reserved)?;
-        out.add_const(idx, lane as u8);
-        out.clear(layout.base + 1);
-        out.copy_add(idx, layout.base + 1, T0);
-        out.clear(layout.base + 2);
-        out.copy_add(layout.base + 1, layout.base + 2, T0);
-        out.clear(layout.base + 3);
-        out.copy_add(value.base + lane, layout.base + 3, T0);
-        out.tritonio_array_set(layout.base);
+        out.clear(layout.base + 4 + lane);
+        out.copy_add(index_cell, layout.base + 4 + lane, T0);
+        out.clear(layout.base + 8 + lane);
+        out.copy_add(layout.base + 4 + lane, layout.base + 8 + lane, T0);
+        out.clear(layout.base + 12 + lane);
+        out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
+        push_scaled_microcode(out, layout.base, lane, crate::interpreter::ARRAY_SET_BF);
     }
-    out.free_control_cells(6);
+    out.free_control_cells(5);
     Ok(())
 }
 
