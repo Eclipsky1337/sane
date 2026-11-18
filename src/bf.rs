@@ -1187,15 +1187,22 @@ fn array_elem(layout: ArrayLayout, index: usize) -> Result<ValueLayout, String> 
     }
 }
 
-fn push_scaled_microcode(out: &mut BfOut, base: usize, lane: usize, code: &str) {
-    out.goto(base + lane);
-    for c in code.chars() {
-        match c {
-            '>' => out.code.push_str(">>>>"),
-            '<' => out.code.push_str("<<<<"),
-            _ => out.code.push(c),
-        }
+fn push_microcode(out: &mut BfOut, base: usize, code: &str) {
+    out.goto(base);
+    out.code.push_str(code);
+}
+
+fn clear_wide_metadata(layout: ArrayLayout, out: &mut BfOut) {
+    for offset in 0..16 {
+        out.clear(layout.base + offset);
     }
+}
+
+fn set_wide_index(layout: ArrayLayout, index_cell: usize, out: &mut BfOut) {
+    out.clear(layout.base + 4);
+    out.copy_add(index_cell, layout.base + 4, T0);
+    out.clear(layout.base + 8);
+    out.copy_add(index_cell, layout.base + 8, T0);
 }
 
 fn emit_int_array_get_dynamic(
@@ -1209,15 +1216,23 @@ fn emit_int_array_get_dynamic(
     for cell in dst.cells() {
         out.clear(cell);
     }
+    clear_wide_metadata(layout, out);
+    set_wide_index(layout, index_cell, out);
+    push_microcode(out, layout.base, crate::interpreter::WIDE_GET_BF);
     for lane in 0..4 {
-        out.clear(layout.base + 4 + lane);
-        out.copy_add(index_cell, layout.base + 4 + lane, T0);
-        out.clear(layout.base + 8 + lane);
-        out.copy_add(layout.base + 4 + lane, layout.base + 8 + lane, T0);
-        push_scaled_microcode(out, layout.base, lane, crate::interpreter::ARRAY_GET_BF);
-        out.clear(dst.base + lane);
         out.move_add(layout.base + 12 + lane, dst.base + lane);
     }
+
+    // Wide get is destructive: lanes 1..3 of the selected record are
+    // parked in I1/I2.  Use wide set to write the value back, restoring
+    // the array; dst keeps the result.
+    clear_wide_metadata(layout, out);
+    set_wide_index(layout, index_cell, out);
+    for lane in 0..4 {
+        out.clear(layout.base + 12 + lane);
+        out.copy_add(dst.base + lane, layout.base + 12 + lane, T0);
+    }
+    push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);
     out.free_control_cells(1);
     Ok(())
 }
@@ -1240,15 +1255,13 @@ fn emit_int_array_set_dynamic(
 
     let index_cell = out.alloc_control_cell();
     emit_expr_to(index, index_cell, out, &[index_cell])?;
+    clear_wide_metadata(layout, out);
+    set_wide_index(layout, index_cell, out);
     for lane in 0..4 {
-        out.clear(layout.base + 4 + lane);
-        out.copy_add(index_cell, layout.base + 4 + lane, T0);
-        out.clear(layout.base + 8 + lane);
-        out.copy_add(layout.base + 4 + lane, layout.base + 8 + lane, T0);
         out.clear(layout.base + 12 + lane);
         out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
-        push_scaled_microcode(out, layout.base, lane, crate::interpreter::ARRAY_SET_BF);
     }
+    push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);
     out.free_control_cells(5);
     Ok(())
 }
