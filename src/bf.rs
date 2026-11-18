@@ -1198,6 +1198,12 @@ fn clear_wide_metadata(layout: ArrayLayout, out: &mut BfOut) {
     }
 }
 
+fn clear_wide_scratch(layout: ArrayLayout, out: &mut BfOut) {
+    for offset in 0..12 {
+        out.clear(layout.base + offset);
+    }
+}
+
 fn set_wide_index(layout: ArrayLayout, index_cell: usize, out: &mut BfOut) {
     out.clear(layout.base + 4);
     out.copy_add(index_cell, layout.base + 4, T0);
@@ -1220,18 +1226,14 @@ fn emit_int_array_get_dynamic(
     set_wide_index(layout, index_cell, out);
     push_microcode(out, layout.base, crate::interpreter::WIDE_GET_BF);
     for lane in 0..4 {
-        out.move_add(layout.base + 12 + lane, dst.base + lane);
+        out.copy_add(layout.base + 12 + lane, dst.base + lane, T0);
     }
 
     // Wide get is destructive: lanes 1..3 of the selected record are
-    // parked in I1/I2.  Use wide set to write the value back, restoring
-    // the array; dst keeps the result.
-    clear_wide_metadata(layout, out);
+    // parked in I1/I2.  T still holds the result, so clear the scratch
+    // cells and run wide set to write it back and restore the array.
+    clear_wide_scratch(layout, out);
     set_wide_index(layout, index_cell, out);
-    for lane in 0..4 {
-        out.clear(layout.base + 12 + lane);
-        out.copy_add(dst.base + lane, layout.base + 12 + lane, T0);
-    }
     push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);
     out.free_control_cells(1);
     Ok(())
