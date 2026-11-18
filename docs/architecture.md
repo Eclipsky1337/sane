@@ -102,9 +102,9 @@ arrays keep the same 16 metadata cells, arranged as four lanes of (`space`,
 access uses only lane 0's index counters. Its traversal microcode has stride-4
 moves, and every value-move loop is emitted once per lane, so one shared index
 drives all four lanes while the generated code size stays fixed for every array
-length up to 255. A wide get parks lanes 1..3 of the selected element in the
-metadata cells, so the compiler copies the result out and then runs the wide
-set microcode to write it back and restore the array.
+length up to 255. A wide get is non-destructive: the two transfer loops that
+park lanes 1..3 in the shared metadata cells are each followed by a short
+three-lane restore, so a get never needs a wide set pass to repair the array.
 
 ### Scratch And Control Cells
 
