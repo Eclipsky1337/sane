@@ -1372,12 +1372,8 @@ fn emit_shared_int_set(
 }
 
 fn set_byte_index(layout: ArrayLayout, offset: usize, out: &mut BfOut) {
-    out.clear(layout.base);
-    out.clear(layout.base + 1);
     out.copy_add(offset, layout.base + 1, T0);
-    out.clear(layout.base + 2);
     out.copy_add(offset, layout.base + 2, T0);
-    out.clear(layout.base + 3);
 }
 
 fn emit_byte_array_get_at(layout: ArrayLayout, offset: usize, dst: usize, out: &mut BfOut) {
@@ -1514,16 +1510,8 @@ fn push_microcode(out: &mut BfOut, base: usize, code: &str) {
     out.code.push_str(code);
 }
 
-fn clear_wide_metadata(layout: ArrayLayout, out: &mut BfOut) {
-    for offset in 0..16 {
-        out.clear(layout.base + offset);
-    }
-}
-
 fn set_wide_index(layout: ArrayLayout, index_cell: usize, out: &mut BfOut) {
-    out.clear(layout.base + 4);
     out.copy_add(index_cell, layout.base + 4, T0);
-    out.clear(layout.base + 8);
     out.copy_add(index_cell, layout.base + 8, T0);
 }
 
@@ -1531,7 +1519,6 @@ fn emit_int_array_get_at(layout: ArrayLayout, offset: usize, dst: ValueLayout, o
     for cell in dst.cells() {
         out.clear(cell);
     }
-    clear_wide_metadata(layout, out);
     set_wide_index(layout, offset, out);
     push_microcode(out, layout.base, crate::interpreter::WIDE_GET_BF);
     for lane in 0..4 {
@@ -1565,10 +1552,8 @@ fn emit_int_array_get_dynamic(
 }
 
 fn emit_int_array_set_at(layout: ArrayLayout, offset: usize, value: ValueLayout, out: &mut BfOut) {
-    clear_wide_metadata(layout, out);
     set_wide_index(layout, offset, out);
     for lane in 0..4 {
-        out.clear(layout.base + 12 + lane);
         out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
     }
     push_microcode(out, layout.base, crate::interpreter::WIDE_SET_BF);

@@ -118,11 +118,15 @@ carry one transfer lane; int/fixed gets carry four. Sets and input stores do
 not need a result on the way back.
 
 This keeps the generated primitive body at one copy per access site instead
-of one copy per page. Constant array accesses still compile directly to a
-known element cell. Dynamic int indexes split into `page = index >> 8` and
-`offset = index & 255`; byte indexes address page 0 only. Static storage is
-capped at 29,000 cells so the runtime control cells still fit in the
-30,000-cell tape.
+of one copy per page. Single-page arrays use the same invariant: their
+metadata is cleared once at declaration, and a direct get or set only seeds
+`index1`/`index2` and the transfer cell, so it does not clear metadata on
+every access.
+
+Constant array accesses still compile directly to a known element cell.
+Dynamic int indexes split into `page = index >> 8` and `offset = index & 255`;
+byte indexes address page 0 only. Static storage is capped at 29,000 cells so
+the runtime control cells still fit in the 30,000-cell tape.
 
 ### Scratch And Control Cells
 
