@@ -1181,44 +1181,6 @@ fn free_index_parts(parts: IndexParts, out: &mut BfOut) {
     out.free_control_cells(parts.cells);
 }
 
-fn page_metadata_len(value_type: ValueType) -> usize {
-    match value_type {
-        ValueType::Byte => 4,
-        ValueType::Int | ValueType::Fixed => 16,
-    }
-}
-
-fn clear_shared_page(page: ArrayLayout, out: &mut BfOut) {
-    out.clear(page.base - 1);
-    for offset in 0..page_metadata_len(page.value_type) {
-        out.clear(page.base + offset);
-    }
-}
-
-fn preload_shared_index(page: ArrayLayout, offset: usize, out: &mut BfOut) {
-    match page.value_type {
-        ValueType::Byte => {
-            out.copy_add(offset, page.base + 1, T0);
-            out.copy_add(offset, page.base + 2, T0);
-        }
-        ValueType::Int | ValueType::Fixed => {
-            out.copy_add(offset, page.base + 4, T0);
-            out.copy_add(offset, page.base + 8, T0);
-        }
-    }
-}
-
-fn preload_shared_value(page: ArrayLayout, value: ValueLayout, out: &mut BfOut) {
-    match page.value_type {
-        ValueType::Byte => out.copy_add(value.base, page.base + 3, T0),
-        ValueType::Int | ValueType::Fixed => {
-            for lane in 0..4 {
-                out.copy_add(value.base + lane, page.base + 12 + lane, T0);
-            }
-        }
-    }
-}
-
 fn setup_shared_pages(
     layout: ArrayLayout,
     page_cell: usize,
@@ -1226,22 +1188,36 @@ fn setup_shared_pages(
     value: Option<ValueLayout>,
     out: &mut BfOut,
 ) {
-    for page_index in 0..layout.page_count() {
-        let page = layout.page_layout(page_index);
-        clear_shared_page(page, out);
-        preload_shared_index(page, offset, out);
-        if let Some(value) = value {
-            preload_shared_value(page, value, out);
+    out.copy_add(page_cell, layout.base - 1, T0);
+    out.copy_add(page_cell, layout.base, T0);
+    match layout.value_type {
+        ValueType::Byte => {
+            out.copy_add(offset, layout.base + 1, T0);
+            out.copy_add(offset, layout.base + 2, T0);
+            if let Some(value) = value {
+                out.copy_add(value.base, layout.base + 3, T0);
+            }
+        }
+        ValueType::Int | ValueType::Fixed => {
+            out.copy_add(offset, layout.base + 4, T0);
+            out.copy_add(offset, layout.base + 8, T0);
+            if let Some(value) = value {
+                for lane in 0..4 {
+                    out.copy_add(value.base + lane, layout.base + 12 + lane, T0);
+                }
+            }
         }
     }
-    out.clear(layout.base - 1);
-    out.copy_add(page_cell, layout.base - 1, T0);
-    out.clear(layout.base);
-    out.copy_add(page_cell, layout.base, T0);
     out.goto(layout.base);
 }
 
-fn shared_forward_code(stride: usize) -> String {
+fn shared_forward_code(
+    stride: usize,
+    i1_off: usize,
+    i2_off: usize,
+    t_off: usize,
+    transfer_lanes: usize,
+) -> String {
     let mut code = String::from("[");
     code.push_str("[-");
     code.push_str(&">".repeat(stride));
@@ -1252,32 +1228,64 @@ fn shared_forward_code(stride: usize) -> String {
     code.push_str(&">".repeat(stride));
     code.push('+');
     code.push_str(&"<".repeat(stride));
-    code.push_str("]");
-    code.push_str(&">".repeat(stride + 1));
+    code.push(']');
+    code.push_str(&">".repeat(i1_off + 1));
+    code.push_str("[-");
+    code.push_str(&">".repeat(stride));
+    code.push('+');
+    code.push_str(&"<".repeat(stride));
+    code.push(']');
+    code.push_str(&">".repeat(i2_off - i1_off));
+    code.push_str("[-");
+    code.push_str(&">".repeat(stride));
+    code.push('+');
+    code.push_str(&"<".repeat(stride));
+    code.push(']');
+
+    let mut last = i2_off;
+    if transfer_lanes > 0 {
+        code.push_str(&">".repeat(t_off - i2_off));
+        for lane in 0..transfer_lanes {
+            code.push_str("[-");
+            code.push_str(&">".repeat(stride));
+            code.push('+');
+            code.push_str(&"<".repeat(stride));
+            code.push(']');
+            if lane + 1 < transfer_lanes {
+                code.push('>');
+            }
+        }
+        last = t_off + transfer_lanes - 1;
+    }
+    code.push_str(&">".repeat(stride - last));
     code.push('-');
     code.push(']');
     code
 }
 
-fn shared_back_code(stride: usize, transfer_offset: usize, lanes: usize) -> String {
+fn shared_back_code(stride: usize, t_off: usize, transfer_lanes: usize) -> String {
     let mut code = String::from("<[");
     code.push_str("[-");
     code.push_str(&"<".repeat(stride));
     code.push('+');
     code.push_str(&">".repeat(stride));
     code.push(']');
-    code.push_str(&">".repeat(transfer_offset + 1));
-    for lane in 0..lanes {
-        code.push_str("[-");
-        code.push_str(&"<".repeat(stride));
-        code.push('+');
-        code.push_str(&">".repeat(stride));
-        code.push(']');
-        if lane + 1 < lanes {
-            code.push('>');
+    if transfer_lanes > 0 {
+        code.push_str(&">".repeat(t_off + 1));
+        for lane in 0..transfer_lanes {
+            code.push_str("[-");
+            code.push_str(&"<".repeat(stride));
+            code.push('+');
+            code.push_str(&">".repeat(stride));
+            code.push(']');
+            if lane + 1 < transfer_lanes {
+                code.push('>');
+            }
         }
+        code.push_str(&"<".repeat(stride + t_off + transfer_lanes));
+    } else {
+        code.push_str(&"<".repeat(stride));
     }
-    code.push_str(&"<".repeat(stride + transfer_offset + lanes));
     code.push('-');
     code.push(']');
     code
@@ -1292,7 +1300,7 @@ fn emit_shared_byte_get(
 ) {
     setup_shared_pages(layout, page_cell, offset, None, out);
     let stride = layout.full_page_stride();
-    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(&shared_forward_code(stride, 1, 2, 3, 0));
     out.code.push_str(crate::interpreter::ARRAY_GET_BF);
     out.code.push_str(&shared_back_code(stride, 3, 1));
     out.ptr = layout.base - 1;
@@ -1312,20 +1320,20 @@ fn emit_shared_byte_set(
 ) {
     setup_shared_pages(layout, page_cell, offset, Some(value), out);
     let stride = layout.full_page_stride();
-    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(&shared_forward_code(stride, 1, 2, 3, 1));
     out.code.push_str(crate::interpreter::ARRAY_SET_BF);
-    out.code.push_str(&shared_back_code(stride, 3, 1));
+    out.code.push_str(&shared_back_code(stride, 3, 0));
     out.ptr = layout.base - 1;
 }
 
 fn emit_shared_byte_read(layout: ArrayLayout, page_cell: usize, offset: usize, out: &mut BfOut) {
     setup_shared_pages(layout, page_cell, offset, None, out);
     let stride = layout.full_page_stride();
-    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(&shared_forward_code(stride, 1, 2, 3, 0));
     out.code.push_str(">>>,");
     out.code.push_str("<<<");
     out.code.push_str(crate::interpreter::ARRAY_SET_BF);
-    out.code.push_str(&shared_back_code(stride, 3, 1));
+    out.code.push_str(&shared_back_code(stride, 3, 0));
     out.ptr = layout.base - 1;
 }
 
@@ -1338,7 +1346,7 @@ fn emit_shared_int_get(
 ) {
     setup_shared_pages(layout, page_cell, offset, None, out);
     let stride = layout.full_page_stride();
-    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(&shared_forward_code(stride, 4, 8, 12, 0));
     out.code.push_str(crate::interpreter::WIDE_GET_BF);
     out.code.push_str(&shared_back_code(stride, 12, 4));
     out.ptr = layout.base - 1;
@@ -1357,9 +1365,9 @@ fn emit_shared_int_set(
 ) {
     setup_shared_pages(layout, page_cell, offset, Some(value), out);
     let stride = layout.full_page_stride();
-    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(&shared_forward_code(stride, 4, 8, 12, 4));
     out.code.push_str(crate::interpreter::WIDE_SET_BF);
-    out.code.push_str(&shared_back_code(stride, 12, 4));
+    out.code.push_str(&shared_back_code(stride, 12, 0));
     out.ptr = layout.base - 1;
 }
 

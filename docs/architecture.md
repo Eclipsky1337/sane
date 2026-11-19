@@ -103,17 +103,19 @@ of (`space`, `index1`, `index2`, `transfer`), followed by four-cell elements.
 The `P2` prefix keeps the primitive body's data offsets unchanged: data is
 still at `space + 4` for bytes and `space + 16` for int/fixed.
 
-A paged access shares one primitive body across all pages. The setup preloads
-each page's `index1`/`index2` with the in-page offset and clears `P2`, `space`,
-and `transfer`. It then sets page 0's `space` and `P2` to the page number.
+A paged access shares one primitive body across all pages. Array storage is
+cleared once at its declaration, and every paged access returns all metadata
+cells to zero, so the setup never clears pages. It only seeds page 0:
+`space` and `P2` become the page number, `index1`/`index2` become the in-page
+offset, and `transfer` receives the value for a set or input store.
 
-The forward loop moves `space` and `P2` one page at a time and decrements
-`space`; when it reaches zero the BF pointer is at the selected page. The
-shared primitive body runs there. A backward loop then moves `P2` and the
-result `transfer` cell one page left per iteration and decrements `P2`; it
-stops at page 0. Byte gets carry the result in the transfer cell; int/fixed
-gets carry all four transfer lanes. Sets and input stores carry the value
-forward instead and do not need a result on the way back.
+The forward loop carries `P2`, `index1`, `index2`, and the `space` count one
+page at a time and decrements `space`; when it reaches zero the BF pointer is
+at the selected page and the body runs there. Writes also carry the transfer
+lanes forward. A backward loop then moves `P2` and the result transfer cell
+one page left per iteration and decrements `P2`; it stops at page 0. Byte gets
+carry one transfer lane; int/fixed gets carry four. Sets and input stores do
+not need a result on the way back.
 
 This keeps the generated primitive body at one copy per access site instead
 of one copy per page. Constant array accesses still compile directly to a
