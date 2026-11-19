@@ -132,12 +132,6 @@ impl Parser {
             } else {
                 None
             };
-            if second_len.is_some() && self.at(TokenKind::Eq) {
-                return Err(Diagnostic::new(
-                    "2D array initializers are not supported yet",
-                    self.tokens[self.current].span,
-                ));
-            }
             let init = if self.match_kind(TokenKind::Eq) {
                 Some(self.parse_array_initializer()?)
             } else {
@@ -219,10 +213,33 @@ impl Parser {
         }
 
         self.expect(TokenKind::LBracket)?;
-        let mut items = Vec::new();
         if self.match_kind(TokenKind::RBracket) {
-            return Ok(ArrayInit::Items(items));
+            return Ok(ArrayInit::Items(Vec::new()));
         }
+        if self.at(TokenKind::LBracket) || matches!(self.peek(), TokenKind::StringLit(_)) {
+            let mut rows = Vec::new();
+            loop {
+                let row = self.parse_array_initializer()?;
+                if matches!(row, ArrayInit::Rows(_)) {
+                    return Err(Diagnostic::new(
+                        "array initializers support at most two dimensions",
+                        row.span(),
+                    ));
+                }
+                rows.push(row);
+                if self.match_kind(TokenKind::Comma) {
+                    if self.match_kind(TokenKind::RBracket) {
+                        break;
+                    }
+                } else {
+                    self.expect(TokenKind::RBracket)?;
+                    break;
+                }
+            }
+            return Ok(ArrayInit::Rows(rows));
+        }
+
+        let mut items = Vec::new();
         loop {
             items.push(self.parse_expr()?);
             if self.match_kind(TokenKind::Comma) {

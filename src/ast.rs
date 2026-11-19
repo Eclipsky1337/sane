@@ -158,6 +158,7 @@ pub enum ArrayLen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayInit {
     Items(Vec<Expr>),
+    Rows(Vec<ArrayInit>),
     Bytes(Vec<u8>, Span),
 }
 
@@ -165,6 +166,7 @@ impl ArrayInit {
     pub fn len(&self) -> usize {
         match self {
             ArrayInit::Items(items) => items.len(),
+            ArrayInit::Rows(rows) => rows.iter().map(ArrayInit::len).sum(),
             ArrayInit::Bytes(bytes, _) => bytes.len(),
         }
     }
@@ -174,6 +176,10 @@ impl ArrayInit {
             ArrayInit::Items(items) => items
                 .last()
                 .map(Expr::span)
+                .unwrap_or_else(|| Span::point(0)),
+            ArrayInit::Rows(rows) => rows
+                .last()
+                .map(ArrayInit::span)
                 .unwrap_or_else(|| Span::point(0)),
             ArrayInit::Bytes(_, span) => *span,
         }

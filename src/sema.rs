@@ -699,12 +699,6 @@ impl Resolver {
                     Some(value_type) => *value_type,
                     None => self.infer_array_type(init.as_ref())?,
                 };
-                if cols > 0 && init.is_some() {
-                    return Err(Diagnostic::new(
-                        "2D array initializers are not supported yet",
-                        *name_span,
-                    ));
-                }
                 let provisional_layout = ArrayLayout {
                     base: 0,
                     len,
@@ -734,7 +728,7 @@ impl Resolver {
                         value_type,
                     },
                 );
-                let init = self.resolve_array_init(init.as_ref(), len, value_type)?;
+                let init = self.resolve_array_init(init.as_ref(), len, cols, value_type)?;
                 Ok(ResolvedStmt::LetArray { layout, init })
             }
             Stmt::Assign {
@@ -1335,6 +1329,12 @@ impl Resolver {
     fn infer_array_type(&mut self, init: Option<&ArrayInit>) -> Result<ValueType, Diagnostic> {
         match init {
             Some(ArrayInit::Bytes(..)) => Ok(ValueType::Byte),
+            Some(ArrayInit::Rows(rows)) => Err(Diagnostic::new(
+                "nested initializer requires an explicit two-dimensional type",
+                rows.first()
+                    .map(ArrayInit::span)
+                    .unwrap_or_else(|| Span::point(0)),
+            )),
             Some(ArrayInit::Items(items)) => {
                 let mut value_type = ValueType::Byte;
                 for item in items {
@@ -1361,6 +1361,7 @@ impl Resolver {
         &mut self,
         init: Option<&ArrayInit>,
         len: usize,
+        cols: usize,
         value_type: ValueType,
     ) -> Result<Vec<u32>, Diagnostic> {
         let Some(init) = init else {
@@ -1402,36 +1403,105 @@ impl Resolver {
                 }
                 items
                     .iter()
-                    .map(|expr| {
-                        let resolved = self.resolve_expr(expr)?;
-                        if !can_assign(value_type, resolved.value_type()) {
-                            return Err(Diagnostic::new(
-                                format!(
-                                    "cannot initialize {:?} array with {:?} expression",
-                                    value_type,
-                                    resolved.value_type()
-                                ),
-                                expr.span(),
-                            ));
-                        }
-                        let value = eval_resolved_const(&resolved).ok_or_else(|| {
-                            Diagnostic::new(
-                                match value_type {
-                                    ValueType::Byte => {
-                                        "array initializer elements must be constant bytes"
-                                    }
-                                    ValueType::Int | ValueType::Fixed => {
-                                        "array initializer elements must be constant scalar expressions"
-                                    }
-                                },
-                                expr.span(),
-                            )
-                        })?;
-                        Ok(convert_const_value(value, resolved.value_type(), value_type))
-                    })
+                    .map(|expr| self.resolve_array_item(expr, value_type))
                     .collect()
             }
+            ArrayInit::Rows(rows) => {
+                if cols == 0 {
+                    return Err(Diagnostic::new(
+                        "nested initializer requires a two-dimensional array",
+                        init.span(),
+                    ));
+                }
+                if rows.len().saturating_mul(cols) != len {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "array initializer has {} rows of {cols} elements, but length is {len}",
+                            rows.len()
+                        ),
+                        init.span(),
+                    ));
+                }
+                let mut values = Vec::with_capacity(len);
+                for row in rows {
+                    match row {
+                        ArrayInit::Items(items) => {
+                            if items.len() != cols {
+                                return Err(Diagnostic::new(
+                                    format!(
+                                        "array row has {} elements, but expected {cols}",
+                                        items.len()
+                                    ),
+                                    row.span(),
+                                ));
+                            }
+                            for expr in items {
+                                values.push(self.resolve_array_item(expr, value_type)?);
+                            }
+                        }
+                        ArrayInit::Bytes(bytes, span) => {
+                            if value_type != ValueType::Byte {
+                                return Err(Diagnostic::new(
+                                    "string row requires a byte array",
+                                    *span,
+                                ));
+                            }
+                            if bytes.len() != cols {
+                                return Err(Diagnostic::new(
+                                    format!(
+                                        "array row has {} elements, but expected {cols}",
+                                        bytes.len()
+                                    ),
+                                    *span,
+                                ));
+                            }
+                            values.extend(bytes.iter().copied().map(u32::from));
+                        }
+                        ArrayInit::Rows(_) => {
+                            return Err(Diagnostic::new(
+                                "array initializers support at most two dimensions",
+                                row.span(),
+                            ));
+                        }
+                    }
+                }
+                Ok(values)
+            }
         }
+    }
+
+    fn resolve_array_item(
+        &mut self,
+        expr: &Expr,
+        value_type: ValueType,
+    ) -> Result<u32, Diagnostic> {
+        let resolved = self.resolve_expr(expr)?;
+        if !can_assign(value_type, resolved.value_type()) {
+            return Err(Diagnostic::new(
+                format!(
+                    "cannot initialize {:?} array with {:?} expression",
+                    value_type,
+                    resolved.value_type()
+                ),
+                expr.span(),
+            ));
+        }
+        let value = eval_resolved_const(&resolved).ok_or_else(|| {
+            Diagnostic::new(
+                match value_type {
+                    ValueType::Byte => "array initializer elements must be constant bytes",
+                    ValueType::Int | ValueType::Fixed => {
+                        "array initializer elements must be constant scalar expressions"
+                    }
+                },
+                expr.span(),
+            )
+        })?;
+        Ok(convert_const_value(
+            value,
+            resolved.value_type(),
+            value_type,
+        ))
     }
 
     fn check_const_index(&self, index: &Expr, len: usize) -> Result<(), Diagnostic> {
