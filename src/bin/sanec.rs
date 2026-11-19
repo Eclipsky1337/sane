@@ -150,7 +150,7 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                 let last = if *len == 0 {
                     first - 1
                 } else {
-                    *base + layout.storage_len() - 1
+                    *base + layout.storage_len() - 2
                 };
                 lines.push(format!(
                     "{name} ARRAY BASE {base} LEN {len} PAGES {pages} DATA CELLS {first} TO {last}"

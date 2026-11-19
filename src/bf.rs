@@ -361,7 +361,8 @@ fn emit_basic_stmt(stmt: &Stmt, out: &mut BfOut) -> Result<(), String> {
             }
         }
         Stmt::LetArray { layout, init } => {
-            for cell in layout.base..layout.base + layout.storage_len() {
+            let storage_start = layout.base - layout.page_header_len();
+            for cell in storage_start..storage_start + layout.storage_len() {
                 out.clear(cell);
             }
             for (offset, value) in init.iter().copied().enumerate() {
@@ -997,7 +998,7 @@ fn emit_store_input_value(
         }
         PreparedInputTarget::ArrayDynamic { layout, parts } => {
             let pages = layout.page_count();
-            let mut store = |page: usize, out: &mut BfOut| -> Result<(), String> {
+            let store = |page: usize, out: &mut BfOut| -> Result<(), String> {
                 let page_layout = layout.page_layout(page);
                 match layout.value_type {
                     ValueType::Byte => {
@@ -1015,7 +1016,18 @@ fn emit_store_input_value(
                 Ok(())
             };
             if let Some(page_cell) = parts.page {
-                emit_page_selector(page_cell, pages, out, &mut store)?;
+                if pages > 1 {
+                    match layout.value_type {
+                        ValueType::Byte => {
+                            emit_shared_byte_set(layout, page_cell, parts.offset, source, out)
+                        }
+                        ValueType::Int | ValueType::Fixed => {
+                            emit_shared_int_set(layout, page_cell, parts.offset, source, out)
+                        }
+                    }
+                } else {
+                    store(0, out)?;
+                }
             } else {
                 store(0, out)?;
             }
@@ -1169,74 +1181,186 @@ fn free_index_parts(parts: IndexParts, out: &mut BfOut) {
     out.free_control_cells(parts.cells);
 }
 
-const SEQUENTIAL_PAGE_LIMIT: usize = 8;
-
-fn emit_page_selector<F>(
-    page_cell: usize,
-    pages: usize,
-    out: &mut BfOut,
-    mut body: F,
-) -> Result<(), String>
-where
-    F: FnMut(usize, &mut BfOut) -> Result<(), String>,
-{
-    if pages <= 1 {
-        return body(0, out);
+fn page_metadata_len(value_type: ValueType) -> usize {
+    match value_type {
+        ValueType::Byte => 4,
+        ValueType::Int | ValueType::Fixed => 16,
     }
-    if pages <= SEQUENTIAL_PAGE_LIMIT {
-        for page in 0..pages {
-            let flag = out.alloc_control_cell();
-            emit_cell_eq_const(page_cell, page as u8, flag, out);
-            out.goto(flag);
-            out.code.push('[');
-            out.clear(flag);
-            body(page, out)?;
-            out.goto(flag);
-            out.code.push(']');
-            out.free_control_cells(1);
-        }
-        return Ok(());
-    }
-    emit_page_tree(page_cell, 0, pages, out, &mut body)
 }
 
-fn emit_page_tree<F>(
-    page_cell: usize,
-    lo: usize,
-    hi: usize,
-    out: &mut BfOut,
-    body: &mut F,
-) -> Result<(), String>
-where
-    F: FnMut(usize, &mut BfOut) -> Result<(), String>,
-{
-    if hi - lo == 1 {
-        return body(lo, out);
+fn clear_shared_page(page: ArrayLayout, out: &mut BfOut) {
+    out.clear(page.base - 1);
+    for offset in 0..page_metadata_len(page.value_type) {
+        out.clear(page.base + offset);
     }
-    let mid = (lo + hi) / 2;
-    let cond = out.alloc_control_cell();
-    emit_cell_less_const(page_cell, mid as u8, cond, out);
-    let else_flag = out.alloc_control_cell();
-    out.clear(else_flag);
-    out.add_const(else_flag, 1);
+}
 
-    out.goto(cond);
-    out.code.push('[');
-    out.clear(cond);
-    out.clear(else_flag);
-    emit_page_tree(page_cell, lo, mid, out, body)?;
-    out.goto(cond);
-    out.code.push(']');
+fn preload_shared_index(page: ArrayLayout, offset: usize, out: &mut BfOut) {
+    match page.value_type {
+        ValueType::Byte => {
+            out.copy_add(offset, page.base + 1, T0);
+            out.copy_add(offset, page.base + 2, T0);
+        }
+        ValueType::Int | ValueType::Fixed => {
+            out.copy_add(offset, page.base + 4, T0);
+            out.copy_add(offset, page.base + 8, T0);
+        }
+    }
+}
 
-    out.goto(else_flag);
-    out.code.push('[');
-    out.clear(else_flag);
-    emit_page_tree(page_cell, mid, hi, out, body)?;
-    out.goto(else_flag);
-    out.code.push(']');
+fn preload_shared_value(page: ArrayLayout, value: ValueLayout, out: &mut BfOut) {
+    match page.value_type {
+        ValueType::Byte => out.copy_add(value.base, page.base + 3, T0),
+        ValueType::Int | ValueType::Fixed => {
+            for lane in 0..4 {
+                out.copy_add(value.base + lane, page.base + 12 + lane, T0);
+            }
+        }
+    }
+}
 
-    out.free_control_cells(2);
-    Ok(())
+fn setup_shared_pages(
+    layout: ArrayLayout,
+    page_cell: usize,
+    offset: usize,
+    value: Option<ValueLayout>,
+    out: &mut BfOut,
+) {
+    for page_index in 0..layout.page_count() {
+        let page = layout.page_layout(page_index);
+        clear_shared_page(page, out);
+        preload_shared_index(page, offset, out);
+        if let Some(value) = value {
+            preload_shared_value(page, value, out);
+        }
+    }
+    out.clear(layout.base - 1);
+    out.copy_add(page_cell, layout.base - 1, T0);
+    out.clear(layout.base);
+    out.copy_add(page_cell, layout.base, T0);
+    out.goto(layout.base);
+}
+
+fn shared_forward_code(stride: usize) -> String {
+    let mut code = String::from("[");
+    code.push_str("[-");
+    code.push_str(&">".repeat(stride));
+    code.push('+');
+    code.push_str(&"<".repeat(stride));
+    code.push_str("]<");
+    code.push_str("[-");
+    code.push_str(&">".repeat(stride));
+    code.push('+');
+    code.push_str(&"<".repeat(stride));
+    code.push_str("]");
+    code.push_str(&">".repeat(stride + 1));
+    code.push('-');
+    code.push(']');
+    code
+}
+
+fn shared_back_code(stride: usize, transfer_offset: usize, lanes: usize) -> String {
+    let mut code = String::from("<[");
+    code.push_str("[-");
+    code.push_str(&"<".repeat(stride));
+    code.push('+');
+    code.push_str(&">".repeat(stride));
+    code.push(']');
+    code.push_str(&">".repeat(transfer_offset + 1));
+    for lane in 0..lanes {
+        code.push_str("[-");
+        code.push_str(&"<".repeat(stride));
+        code.push('+');
+        code.push_str(&">".repeat(stride));
+        code.push(']');
+        if lane + 1 < lanes {
+            code.push('>');
+        }
+    }
+    code.push_str(&"<".repeat(stride + transfer_offset + lanes));
+    code.push('-');
+    code.push(']');
+    code
+}
+
+fn emit_shared_byte_get(
+    layout: ArrayLayout,
+    page_cell: usize,
+    offset: usize,
+    dst: usize,
+    out: &mut BfOut,
+) {
+    setup_shared_pages(layout, page_cell, offset, None, out);
+    let stride = layout.full_page_stride();
+    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(crate::interpreter::ARRAY_GET_BF);
+    out.code.push_str(&shared_back_code(stride, 3, 1));
+    out.ptr = layout.base - 1;
+    out.goto(layout.base + 3);
+    if dst != layout.base + 3 {
+        out.clear(dst);
+        out.move_add(layout.base + 3, dst);
+    }
+}
+
+fn emit_shared_byte_set(
+    layout: ArrayLayout,
+    page_cell: usize,
+    offset: usize,
+    value: ValueLayout,
+    out: &mut BfOut,
+) {
+    setup_shared_pages(layout, page_cell, offset, Some(value), out);
+    let stride = layout.full_page_stride();
+    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(crate::interpreter::ARRAY_SET_BF);
+    out.code.push_str(&shared_back_code(stride, 3, 1));
+    out.ptr = layout.base - 1;
+}
+
+fn emit_shared_byte_read(layout: ArrayLayout, page_cell: usize, offset: usize, out: &mut BfOut) {
+    setup_shared_pages(layout, page_cell, offset, None, out);
+    let stride = layout.full_page_stride();
+    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(">>>,");
+    out.code.push_str("<<<");
+    out.code.push_str(crate::interpreter::ARRAY_SET_BF);
+    out.code.push_str(&shared_back_code(stride, 3, 1));
+    out.ptr = layout.base - 1;
+}
+
+fn emit_shared_int_get(
+    layout: ArrayLayout,
+    page_cell: usize,
+    offset: usize,
+    dst: ValueLayout,
+    out: &mut BfOut,
+) {
+    setup_shared_pages(layout, page_cell, offset, None, out);
+    let stride = layout.full_page_stride();
+    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(crate::interpreter::WIDE_GET_BF);
+    out.code.push_str(&shared_back_code(stride, 12, 4));
+    out.ptr = layout.base - 1;
+    for lane in 0..4 {
+        out.clear(dst.base + lane);
+        out.move_add(layout.base + 12 + lane, dst.base + lane);
+    }
+}
+
+fn emit_shared_int_set(
+    layout: ArrayLayout,
+    page_cell: usize,
+    offset: usize,
+    value: ValueLayout,
+    out: &mut BfOut,
+) {
+    setup_shared_pages(layout, page_cell, offset, Some(value), out);
+    let stride = layout.full_page_stride();
+    out.code.push_str(&shared_forward_code(stride));
+    out.code.push_str(crate::interpreter::WIDE_SET_BF);
+    out.code.push_str(&shared_back_code(stride, 12, 4));
+    out.ptr = layout.base - 1;
 }
 
 fn set_byte_index(layout: ArrayLayout, offset: usize, out: &mut BfOut) {
@@ -1278,10 +1402,11 @@ fn emit_array_get_byte(
     let parts = emit_index_parts(index, out, reserved)?;
     let pages = layout.page_count();
     if let Some(page_cell) = parts.page {
-        emit_page_selector(page_cell, pages, out, |page, out| {
-            emit_byte_array_get_at(layout.page_layout(page), parts.offset, dst, out);
-            Ok(())
-        })?;
+        if pages > 1 {
+            emit_shared_byte_get(layout, page_cell, parts.offset, dst, out);
+        } else {
+            emit_byte_array_get_at(layout.page_layout(0), parts.offset, dst, out);
+        }
     } else {
         emit_byte_array_get_at(layout.page_layout(0), parts.offset, dst, out);
     }
@@ -1308,7 +1433,7 @@ fn emit_array_set(
     emit_expr_to(expr, value, out, &[value, T0])?;
     let parts = emit_index_parts(index, out, &[value])?;
     let pages = layout.page_count();
-    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+    let apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
         let page_layout = layout.page_layout(page);
         set_byte_index(page_layout, parts.offset, out);
         out.copy_add(value, page_layout.base + 3, T0);
@@ -1316,7 +1441,17 @@ fn emit_array_set(
         Ok(())
     };
     if let Some(page_cell) = parts.page {
-        emit_page_selector(page_cell, pages, out, &mut apply)?;
+        if pages > 1 {
+            emit_shared_byte_set(
+                layout,
+                page_cell,
+                parts.offset,
+                ValueLayout::byte(value),
+                out,
+            );
+        } else {
+            apply(0, out)?;
+        }
     } else {
         apply(0, out)?;
     }
@@ -1335,7 +1470,7 @@ fn emit_array_read(layout: ArrayLayout, index: &Expr, out: &mut BfOut) -> Result
 
     let parts = emit_index_parts(index, out, &[])?;
     let pages = layout.page_count();
-    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+    let apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
         let page_layout = layout.page_layout(page);
         set_byte_index(page_layout, parts.offset, out);
         out.read(page_layout.base + 3);
@@ -1343,7 +1478,11 @@ fn emit_array_read(layout: ArrayLayout, index: &Expr, out: &mut BfOut) -> Result
         Ok(())
     };
     if let Some(page_cell) = parts.page {
-        emit_page_selector(page_cell, pages, out, &mut apply)?;
+        if pages > 1 {
+            emit_shared_byte_read(layout, page_cell, parts.offset, out);
+        } else {
+            apply(0, out)?;
+        }
     } else {
         apply(0, out)?;
     }
@@ -1400,12 +1539,16 @@ fn emit_int_array_get_dynamic(
 ) -> Result<(), String> {
     let parts = emit_index_parts(index, out, &[])?;
     let pages = layout.page_count();
-    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+    let apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
         emit_int_array_get_at(layout.page_layout(page), parts.offset, dst, out);
         Ok(())
     };
     if let Some(page_cell) = parts.page {
-        emit_page_selector(page_cell, pages, out, &mut apply)?;
+        if pages > 1 {
+            emit_shared_int_get(layout, page_cell, parts.offset, dst, out);
+        } else {
+            apply(0, out)?;
+        }
     } else {
         apply(0, out)?;
     }
@@ -1441,12 +1584,16 @@ fn emit_int_array_set_dynamic(
 
     let parts = emit_index_parts(index, out, &[])?;
     let pages = layout.page_count();
-    let mut apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
+    let apply = |page: usize, out: &mut BfOut| -> Result<(), String> {
         emit_int_array_set_at(layout.page_layout(page), parts.offset, value, out);
         Ok(())
     };
     if let Some(page_cell) = parts.page {
-        emit_page_selector(page_cell, pages, out, &mut apply)?;
+        if pages > 1 {
+            emit_shared_int_set(layout, page_cell, parts.offset, value, out);
+        } else {
+            apply(0, out)?;
+        }
     } else {
         apply(0, out)?;
     }

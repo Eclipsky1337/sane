@@ -52,8 +52,12 @@ impl ArrayLayout {
         }
     }
 
+    pub const fn page_header_len(self) -> usize {
+        1
+    }
+
     pub const fn full_page_stride(self) -> usize {
-        self.data_offset() + Self::PAGE_SIZE * self.value_type.cell_width()
+        self.page_header_len() + self.data_offset() + Self::PAGE_SIZE * self.value_type.cell_width()
     }
 
     pub const fn page_count(self) -> usize {
@@ -91,7 +95,8 @@ impl ArrayLayout {
             return 0;
         }
         let last = pages - 1;
-        last * self.full_page_stride()
+        self.page_header_len()
+            + last * self.full_page_stride()
             + self.data_offset()
             + self.page_len(last) * self.value_type.cell_width()
     }
@@ -671,7 +676,8 @@ impl Resolver {
                     value_type,
                 };
                 let storage_len = provisional_layout.storage_len();
-                let base = self.alloc_fresh_block(storage_len);
+                let base =
+                    self.alloc_fresh_block(storage_len) + provisional_layout.page_header_len();
                 let layout = ArrayLayout {
                     base,
                     len,

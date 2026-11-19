@@ -85,34 +85,42 @@ baseline does not reuse cells from earlier lexical scopes.
 Function parameters and locals occupy static frame cells. Expression calls use
 spill cells when a later call would overwrite an earlier result in `rv`.
 
-Array lengths are capped at 4096 elements. Arrays longer than 256 elements are
-split into 256-element pages. Every page
-has its own metadata block, and page bases are compile-time constants. The
-last page may be shorter. Byte array pages use four metadata cells:
+Array lengths are capped at 4096 elements. Arrays longer than 256 elements
+are split into 256-element pages. Every page starts with a one-cell `P2`
+return index, followed by its metadata and data. Byte pages use:
 
 ```text
-page + 0     space
-page + 1     index1
-page + 2     index2
-page + 3     data transfer cell
-page + 4..   up to 256 byte elements
+page + 0     P2, return page count
+page + 1     space
+page + 2     index1
+page + 3     index2
+page + 4     data transfer cell
+page + 5..   up to 256 byte elements
 ```
 
-Int and fixed pages use 16 metadata cells, arranged as four lanes of (`space`,
-`index1`, `index2`, `transfer`), followed by four-cell elements. A dynamic
-access uses only lane 0's index counters. Its traversal microcode has stride-4
-moves, and every value-move loop is emitted once per lane, so one shared index
-drives all four lanes. A wide get is non-destructive: the two transfer loops
-that park lanes 1..3 in the shared metadata cells are each followed by a short
-three-lane restore, so a get never needs a wide set pass to repair the array.
+Int and fixed pages use 16 metadata cells after `P2`, arranged as four lanes
+of (`space`, `index1`, `index2`, `transfer`), followed by four-cell elements.
+The `P2` prefix keeps the primitive body's data offsets unchanged: data is
+still at `space + 4` for bytes and `space + 16` for int/fixed.
 
-Constant array accesses compile directly to a known element cell. Dynamic int
-indexes split into `page = index >> 8` and `offset = index & 255`; a page
-selector then runs the page access. Selectors are sequential for up to eight
-pages and a binary tree for more pages, keeping execution at O(page count) or
-O(log page count) while code size stays O(page count). Byte indexes address
-page 0 only. Static storage is capped at 29,000 cells so the runtime control
-cells still fit in the 30,000-cell tape.
+A paged access shares one primitive body across all pages. The setup preloads
+each page's `index1`/`index2` with the in-page offset and clears `P2`, `space`,
+and `transfer`. It then sets page 0's `space` and `P2` to the page number.
+
+The forward loop moves `space` and `P2` one page at a time and decrements
+`space`; when it reaches zero the BF pointer is at the selected page. The
+shared primitive body runs there. A backward loop then moves `P2` and the
+result `transfer` cell one page left per iteration and decrements `P2`; it
+stops at page 0. Byte gets carry the result in the transfer cell; int/fixed
+gets carry all four transfer lanes. Sets and input stores carry the value
+forward instead and do not need a result on the way back.
+
+This keeps the generated primitive body at one copy per access site instead
+of one copy per page. Constant array accesses still compile directly to a
+known element cell. Dynamic int indexes split into `page = index >> 8` and
+`offset = index & 255`; byte indexes address page 0 only. Static storage is
+capped at 29,000 cells so the runtime control cells still fit in the
+30,000-cell tape.
 
 ### Scratch And Control Cells
 
