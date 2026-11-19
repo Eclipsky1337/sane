@@ -118,6 +118,25 @@ creates a zero-length byte array. Explicit syntax remains required for an
 uninitialized array. Int and fixed elements occupy four consecutive
 little-endian cells.
 
+Two-dimensional arrays use a page-oriented form with an inner dimension of
+exactly 256:
+
+```sane
+let grid: int[4][256];
+let cell: byte[16][256];
+
+grid[row][col] = 42;
+print "{}
+", grid[row][col];
+```
+
+The outer dimension is limited to 16, so the total element count stays within
+the 4096-element cap. `a[i][j]` is flattened to the page access `i * 256 + j`;
+the page walk selects page `i`, and the shared Tritonio body uses `j` as the
+in-page offset. Byte, int, and fixed elements are supported. Two-dimensional
+array initializers are not supported yet, and more than two dimensions are
+rejected.
+
 An initializer must contain exactly the declared number of bytes. String
 initializers are ASCII-only and do not receive an implicit trailing `\0`.
 

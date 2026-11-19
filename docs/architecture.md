@@ -125,8 +125,12 @@ every access.
 
 Constant array accesses still compile directly to a known element cell.
 Dynamic int indexes split into `page = index >> 8` and `offset = index & 255`;
-byte indexes address page 0 only. Static storage is capped at 29,000 cells so
-the runtime control cells still fit in the 30,000-cell tape.
+byte indexes address page 0 only. Two-dimensional declarations of the form
+`T[rows][256]` are flattened by the parser to a `rows * 256` array:
+`a[i][j]` becomes the flat index `i * 256 + j`, so the page walk naturally
+selects page `i` and the body sees offset `j`. The outer dimension is capped at
+16 by the 4096-element limit. Static storage is capped at 29,000 cells so the
+runtime control cells still fit in the 30,000-cell tape.
 
 ### Scratch And Control Cells
 
