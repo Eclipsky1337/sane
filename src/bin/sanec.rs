@@ -132,11 +132,13 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                 name,
                 base,
                 len,
+                cols,
                 value_type,
             } => {
                 let first = sane::sema::ArrayLayout {
                     base: *base,
                     len: *len,
+                    cols: *cols,
                     value_type: *value_type,
                 }
                 .element(0)
@@ -144,6 +146,7 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                 let layout = sane::sema::ArrayLayout {
                     base: *base,
                     len: *len,
+                    cols: *cols,
                     value_type: *value_type,
                 };
                 let pages = layout.page_count();
@@ -153,7 +156,7 @@ fn format_symbol_annotation(symbols: &sane::sema::Symbols) -> String {
                     *base + layout.storage_len() - 2
                 };
                 lines.push(format!(
-                    "{name} ARRAY BASE {base} LEN {len} PAGES {pages} DATA CELLS {first} TO {last}"
+                    "{name} ARRAY BASE {base} LEN {len} COLS {cols} PAGES {pages} DATA CELLS {first} TO {last}"
                 ));
             }
         }

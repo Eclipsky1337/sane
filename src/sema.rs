@@ -39,6 +39,7 @@ impl ValueLayout {
 pub struct ArrayLayout {
     pub base: usize,
     pub len: usize,
+    pub cols: usize,
     pub value_type: ValueType,
 }
 
@@ -85,6 +86,7 @@ impl ArrayLayout {
         Self {
             base: self.page_start(page),
             len: self.page_len(page),
+            cols: 0,
             value_type: self.value_type,
         }
     }
@@ -153,6 +155,7 @@ pub enum SymbolInfo {
         name: String,
         base: usize,
         len: usize,
+        cols: usize,
         value_type: ValueType,
     },
 }
@@ -656,6 +659,7 @@ impl Resolver {
                 name_span,
                 value_type,
                 len,
+                second_len,
                 init,
                 ..
             } => {
@@ -665,14 +669,46 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                let len = self.resolve_array_len(len)?;
+                let rows = self.resolve_array_len(len)?;
+                let cols = match second_len {
+                    Some(cols) => {
+                        let cols = self.resolve_array_len(cols)?;
+                        if cols > 256 {
+                            return Err(Diagnostic::new(
+                                "2D array inner dimension must be at most 256",
+                                *name_span,
+                            ));
+                        }
+                        cols
+                    }
+                    None => 0,
+                };
+                let (len, cols) = if cols > 0 {
+                    let total = rows.checked_mul(cols).unwrap_or(usize::MAX);
+                    if total > MAX_ARRAY_LEN {
+                        return Err(Diagnostic::new(
+                            format!("array length exceeds the limit of {MAX_ARRAY_LEN}"),
+                            *name_span,
+                        ));
+                    }
+                    (total, cols)
+                } else {
+                    (rows, 0)
+                };
                 let value_type = match value_type {
                     Some(value_type) => *value_type,
                     None => self.infer_array_type(init.as_ref())?,
                 };
+                if cols > 0 && init.is_some() {
+                    return Err(Diagnostic::new(
+                        "2D array initializers are not supported yet",
+                        *name_span,
+                    ));
+                }
                 let provisional_layout = ArrayLayout {
                     base: 0,
                     len,
+                    cols,
                     value_type,
                 };
                 let storage_len = provisional_layout.storage_len();
@@ -681,6 +717,7 @@ impl Resolver {
                 let layout = ArrayLayout {
                     base,
                     len,
+                    cols,
                     value_type,
                 };
                 self.current_scope_mut()
@@ -693,6 +730,7 @@ impl Resolver {
                         name: name.clone(),
                         base,
                         len,
+                        cols,
                         value_type,
                     },
                 );
@@ -724,13 +762,13 @@ impl Resolver {
                 name,
                 name_span,
                 index,
+                second,
                 expr,
                 ..
             } => {
                 let layout = self.lookup_array(name, *name_span)?;
-                self.check_const_index(index, layout.len)?;
-                let index = self.resolve_expr(index)?;
-                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
+                let index =
+                    self.resolve_array_access(layout, index, second.as_ref(), *name_span)?;
                 let expr = self.resolve_expr(expr)?;
                 if !can_assign(layout.value_type, expr.value_type()) {
                     return Err(Diagnostic::new(
@@ -797,6 +835,7 @@ impl Resolver {
                 name,
                 name_span,
                 index,
+                second,
                 ..
             } => {
                 let layout = self.lookup_array(name, *name_span)?;
@@ -806,9 +845,8 @@ impl Resolver {
                         *name_span,
                     ));
                 }
-                self.check_const_index(index, layout.len)?;
-                let index = self.resolve_expr(index)?;
-                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
+                let index =
+                    self.resolve_array_access(layout, index, second.as_ref(), *name_span)?;
                 Ok(ResolvedStmt::ReadArray { layout, index })
             }
             Stmt::Call {
@@ -1004,12 +1042,12 @@ impl Resolver {
                 name,
                 name_span,
                 index,
+                second,
                 ..
             } => {
                 let layout = self.lookup_array(name, *name_span)?;
-                self.check_const_index(index, layout.len)?;
-                let index = self.resolve_expr(index)?;
-                self.require_array_index(&index, layout.len, *name_span, "array indexing")?;
+                let index =
+                    self.resolve_array_access(layout, index, second.as_deref(), *name_span)?;
                 Ok(ResolvedExpr::ArrayGet {
                     layout,
                     index: Box::new(index),
@@ -1066,16 +1104,15 @@ impl Resolver {
                             name,
                             name_span,
                             index,
+                            second,
                             ..
                         } => {
                             let layout = self.lookup_array(name, *name_span)?;
-                            self.check_const_index(index, layout.len)?;
-                            let index = self.resolve_expr(index)?;
-                            self.require_array_index(
-                                &index,
-                                layout.len,
+                            let index = self.resolve_array_access(
+                                layout,
+                                index,
+                                second.as_deref(),
                                 *name_span,
-                                "array indexing",
                             )?;
                             ResolvedInputTarget::Array {
                                 layout,
@@ -1623,6 +1660,42 @@ impl Resolver {
         }
     }
 
+    fn resolve_array_access(
+        &mut self,
+        layout: ArrayLayout,
+        index: &Expr,
+        second: Option<&Expr>,
+        span: Span,
+    ) -> Result<ResolvedExpr, Diagnostic> {
+        if layout.cols == 0 {
+            if second.is_some() {
+                return Err(Diagnostic::new(
+                    "array is one-dimensional but two indexes were provided",
+                    span,
+                ));
+            }
+            self.check_const_index(index, layout.len)?;
+            let index = self.resolve_expr(index)?;
+            self.require_array_index(&index, layout.len, span, "array indexing")?;
+            return Ok(index);
+        }
+
+        let Some(second) = second else {
+            return Err(Diagnostic::new(
+                "two-dimensional array requires two indexes",
+                span,
+            ));
+        };
+        let rows = layout.len / layout.cols;
+        self.check_const_index(index, rows)?;
+        self.check_const_index(second, layout.cols)?;
+        let row = self.resolve_expr(index)?;
+        let col = self.resolve_expr(second)?;
+        self.require_array_index(&row, rows, span, "array indexing")?;
+        self.require_array_index(&col, layout.cols, span, "array indexing")?;
+        Ok(flatten_2d_resolved(row, col, layout.cols))
+    }
+
     fn require_array_index(
         &self,
         expr: &ResolvedExpr,
@@ -1742,6 +1815,40 @@ fn convert_const_value(value: u32, source: ValueType, target: ValueType) -> u32 
         (ValueType::Byte | ValueType::Int, ValueType::Fixed) => value.wrapping_shl(16),
         (ValueType::Byte, ValueType::Int) => value,
         _ => value,
+    }
+}
+
+fn cast_to_int(expr: ResolvedExpr) -> ResolvedExpr {
+    if expr.value_type() == ValueType::Int {
+        expr
+    } else {
+        ResolvedExpr::Cast {
+            expr: Box::new(expr),
+            target: ValueType::Int,
+        }
+    }
+}
+
+fn flatten_2d_resolved(row: ResolvedExpr, col: ResolvedExpr, cols: usize) -> ResolvedExpr {
+    if let (Some(row_value), Some(col_value)) =
+        (eval_resolved_const(&row), eval_resolved_const(&col))
+    {
+        let flat = row_value.wrapping_mul(cols as u32).wrapping_add(col_value);
+        return if flat <= u32::from(u8::MAX) {
+            ResolvedExpr::Byte(flat as u8)
+        } else {
+            ResolvedExpr::Int(flat)
+        };
+    }
+    let scaled = ResolvedExpr::Binary {
+        left: Box::new(cast_to_int(row)),
+        op: BinOp::Mul,
+        right: Box::new(ResolvedExpr::Int(cols as u32)),
+    };
+    ResolvedExpr::Binary {
+        left: Box::new(scaled),
+        op: BinOp::Add,
+        right: Box::new(cast_to_int(col)),
     }
 }
 

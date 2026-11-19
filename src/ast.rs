@@ -79,6 +79,7 @@ pub enum Stmt {
         name_span: Span,
         value_type: Option<ValueType>,
         len: ArrayLen,
+        second_len: Option<ArrayLen>,
         init: Option<ArrayInit>,
         span: Span,
     },
@@ -92,6 +93,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         index: Expr,
+        second: Option<Expr>,
         expr: Expr,
         span: Span,
     },
@@ -110,6 +112,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         index: Expr,
+        second: Option<Expr>,
         span: Span,
     },
     Call {
@@ -187,6 +190,7 @@ pub enum Expr {
         name: String,
         name_span: Span,
         index: Box<Expr>,
+        second: Option<Box<Expr>>,
         span: Span,
     },
     Call {
@@ -244,6 +248,7 @@ pub enum InputTarget {
         name: String,
         name_span: Span,
         index: Box<Expr>,
+        second: Option<Box<Expr>>,
         span: Span,
     },
 }

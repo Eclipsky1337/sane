@@ -5,32 +5,6 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
-fn flatten_2d_index(first: Expr, second: Expr) -> Expr {
-    let span = first.span().join(second.span());
-    let first = Expr::Cast {
-        expr: Box::new(first),
-        target: ValueType::Int,
-        span,
-    };
-    let second = Expr::Cast {
-        expr: Box::new(second),
-        target: ValueType::Int,
-        span,
-    };
-    let scaled = Expr::Binary {
-        left: Box::new(first),
-        op: BinOp::Mul,
-        right: Box::new(Expr::Int(256, IntLiteralKind::Decimal, span)),
-        span,
-    };
-    Expr::Binary {
-        left: Box::new(scaled),
-        op: BinOp::Add,
-        right: Box::new(second),
-        span,
-    }
-}
-
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
@@ -149,31 +123,16 @@ impl Parser {
             None
         };
         if value_type.is_some() && self.match_kind(TokenKind::LBracket) {
-            let mut len_expr = self.parse_expr()?;
+            let len_expr = self.parse_expr()?;
             self.expect(TokenKind::RBracket)?;
-            let mut is_2d = false;
-            if self.match_kind(TokenKind::LBracket) {
-                let inner = self.parse_expr()?;
-                let inner_end = self.expect(TokenKind::RBracket)?.span;
-                match &inner {
-                    Expr::Int(256, _, _) => {}
-                    _ => {
-                        return Err(Diagnostic::new(
-                            "2D array inner dimension must be 256",
-                            inner.span(),
-                        ));
-                    }
-                }
-                let span = len_expr.span().join(inner_end);
-                len_expr = Expr::Binary {
-                    left: Box::new(len_expr),
-                    op: BinOp::Mul,
-                    right: Box::new(Expr::Int(256, IntLiteralKind::Decimal, inner_end)),
-                    span,
-                };
-                is_2d = true;
-            }
-            if is_2d && self.at(TokenKind::Eq) {
+            let second_len = if self.match_kind(TokenKind::LBracket) {
+                let cols = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                Some(ArrayLen::Explicit(cols))
+            } else {
+                None
+            };
+            if second_len.is_some() && self.at(TokenKind::Eq) {
                 return Err(Diagnostic::new(
                     "2D array initializers are not supported yet",
                     self.tokens[self.current].span,
@@ -195,6 +154,7 @@ impl Parser {
                 name_span,
                 value_type,
                 len: ArrayLen::Explicit(len_expr),
+                second_len,
                 init,
                 span: start.join(end),
             });
@@ -221,6 +181,7 @@ impl Parser {
                     name_span,
                     value_type: None,
                     len: ArrayLen::Inferred(len),
+                    second_len: None,
                     init: Some(init),
                     span: start.join(end),
                 });
@@ -282,18 +243,19 @@ impl Parser {
 
     fn parse_assign_with_semi(&mut self, semi: bool) -> Result<Stmt, Diagnostic> {
         let (name, name_span) = self.expect_ident()?;
-        let array_index = if self.match_kind(TokenKind::LBracket) {
+        let (array_index, array_second) = if self.match_kind(TokenKind::LBracket) {
             let index = self.parse_expr()?;
             self.expect(TokenKind::RBracket)?;
-            if self.match_kind(TokenKind::LBracket) {
+            let second = if self.match_kind(TokenKind::LBracket) {
                 let second = self.parse_expr()?;
                 self.expect(TokenKind::RBracket)?;
-                Some(flatten_2d_index(index, second))
+                Some(second)
             } else {
-                Some(index)
-            }
+                None
+            };
+            (Some(index), second)
         } else {
-            None
+            (None, None)
         };
         let compound = if self.match_kind(TokenKind::Eq) {
             None
@@ -337,6 +299,7 @@ impl Parser {
                         name: name.clone(),
                         name_span,
                         index: Box::new(index.clone()),
+                        second: array_second.clone().map(Box::new),
                         span: name_span.join(index.span()),
                     }),
                     op,
@@ -350,6 +313,7 @@ impl Parser {
                 name,
                 name_span,
                 index,
+                second: array_second,
                 expr,
                 span: name_span.join(end),
             });
@@ -445,18 +409,19 @@ impl Parser {
         if self.match_kind(TokenKind::LBracket) {
             let index = self.parse_expr()?;
             let mut end = self.expect(TokenKind::RBracket)?.span;
-            let index = if self.match_kind(TokenKind::LBracket) {
+            let second = if self.match_kind(TokenKind::LBracket) {
                 let second = self.parse_expr()?;
                 end = self.expect(TokenKind::RBracket)?.span;
-                flatten_2d_index(index, second)
+                Some(second)
             } else {
-                index
+                None
             };
             self.expect(TokenKind::Semi)?;
             Ok(Stmt::ReadArray {
                 name,
                 name_span,
                 index,
+                second,
                 span: name_span.join(end),
             })
         } else {
@@ -838,17 +803,18 @@ impl Parser {
                 } else if self.match_kind(TokenKind::LBracket) {
                     let index = self.parse_expr()?;
                     let mut end = self.expect(TokenKind::RBracket)?.span;
-                    let index = if self.match_kind(TokenKind::LBracket) {
+                    let second = if self.match_kind(TokenKind::LBracket) {
                         let second = self.parse_expr()?;
                         end = self.expect(TokenKind::RBracket)?.span;
-                        flatten_2d_index(index, second)
+                        Some(Box::new(second))
                     } else {
-                        index
+                        None
                     };
                     Ok(Expr::ArrayGet {
                         name,
                         name_span: token.span,
                         index: Box::new(index),
+                        second,
                         span: token.span.join(end),
                     })
                 } else {
@@ -883,17 +849,18 @@ impl Parser {
             if self.match_kind(TokenKind::LBracket) {
                 let index = self.parse_expr()?;
                 let mut end = self.expect(TokenKind::RBracket)?.span;
-                let index = if self.match_kind(TokenKind::LBracket) {
+                let second = if self.match_kind(TokenKind::LBracket) {
                     let second = self.parse_expr()?;
                     end = self.expect(TokenKind::RBracket)?.span;
-                    flatten_2d_index(index, second)
+                    Some(Box::new(second))
                 } else {
-                    index
+                    None
                 };
                 targets.push(InputTarget::Array {
                     name,
                     name_span,
                     index: Box::new(index),
+                    second,
                     span: name_span.join(end),
                 });
             } else {
